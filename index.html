@@ -115,21 +115,37 @@
             flex: 1;
             display: flex;
             flex-direction: column;
-            background: #000;
+            background: #0f172a;
             position: relative;
             min-width: 400px;
+            overflow: hidden;
         }
 
         .video-container {
             position: relative;
-            flex: 1;
+            height: 280px;
+            max-height: 35vh;
             display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            flex-shrink: 0;
         }
 
         #videoPlayer {
             width: 100%;
-            flex: 1;
+            height: 100%;
+            max-height: 100%;
+            object-fit: contain;
             background: #000;
+        }
+
+        .video-controls-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            overflow-x: hidden;
         }
 
         #subtitleCanvas {
@@ -157,13 +173,17 @@
         }
 
         .video-status {
-            background: rgba(0, 0, 0, 0.9);
-            padding: 10px 14px;
-            font-size: 12px;
+            background: rgba(15, 23, 42, 0.98);
+            padding: 8px 14px;
+            font-size: 11px;
             display: flex;
-            gap: 16px;
+            gap: 12px;
             flex-wrap: wrap;
             border-top: 1px solid #334155;
+            position: sticky;
+            bottom: 0;
+            z-index: 20;
+            flex-shrink: 0;
         }
 
         .status-item {
@@ -903,6 +923,8 @@
                     <div id="subtitleOverlay"></div>
                 </div>
                 
+                <!-- Scrollable Controls Wrapper -->
+                <div class="video-controls-wrapper">
                 <!-- Comprehensive Video Controls -->
                 <div class="video-controls">
                     <!-- Row 1: Playback Controls -->
@@ -1141,6 +1163,7 @@
                         <span class="status-value" id="statusDropped">-</span>
                     </div>
                 </div>
+                </div><!-- end video-controls-wrapper -->
             </div>
 
             <div class="inspector-panel">
