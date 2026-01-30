@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HDHomeRun Stream Debugger</title>
+    <!-- mpegts.js for MPEG-TS stream parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -26,28 +28,28 @@
 
         .header {
             background: #1e293b;
-            padding: 16px 24px;
+            padding: 12px 20px;
             border-bottom: 1px solid #334155;
             display: flex;
             align-items: center;
-            gap: 16px;
+            gap: 12px;
             flex-wrap: wrap;
         }
 
         .header h1 {
-            font-size: 20px;
+            font-size: 18px;
             color: #0ea5e9;
         }
 
         .url-input {
             flex: 1;
-            min-width: 300px;
-            padding: 10px 14px;
+            min-width: 250px;
+            padding: 8px 12px;
             background: #0f172a;
             border: 2px solid #334155;
             border-radius: 6px;
             color: #e2e8f0;
-            font-size: 14px;
+            font-size: 13px;
         }
 
         .url-input:focus {
@@ -56,12 +58,12 @@
         }
 
         .btn {
-            padding: 10px 20px;
+            padding: 8px 16px;
             background: #0ea5e9;
             color: #000;
             border: none;
             border-radius: 6px;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
@@ -70,7 +72,6 @@
         .btn:hover, .btn.tv-focused {
             background: #06b6d4;
             box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.5);
-            transform: scale(1.02);
         }
 
         .btn:disabled {
@@ -87,7 +88,11 @@
             background: #64748b;
         }
 
-        /* TV Focus styles */
+        .btn-small {
+            padding: 4px 10px;
+            font-size: 11px;
+        }
+
         .tv-focused {
             outline: 3px solid #0ea5e9 !important;
             outline-offset: 2px;
@@ -110,30 +115,28 @@
             flex-direction: column;
             background: #000;
             position: relative;
+            min-width: 400px;
         }
 
         #videoPlayer {
             width: 100%;
-            height: 100%;
+            flex: 1;
             background: #000;
         }
 
         .video-status {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(0, 0, 0, 0.8);
-            padding: 12px 16px;
-            font-size: 13px;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 10px 14px;
+            font-size: 12px;
             display: flex;
-            gap: 24px;
+            gap: 16px;
             flex-wrap: wrap;
+            border-top: 1px solid #334155;
         }
 
         .status-item {
             display: flex;
-            gap: 6px;
+            gap: 4px;
         }
 
         .status-label {
@@ -149,8 +152,12 @@
             color: #f87171;
         }
 
+        .status-value.warning {
+            color: #fbbf24;
+        }
+
         .inspector-panel {
-            width: 450px;
+            width: 500px;
             background: #1e293b;
             border-left: 1px solid #334155;
             display: flex;
@@ -158,28 +165,30 @@
             overflow: hidden;
         }
 
-        .inspector-header {
-            padding: 12px 16px;
+        .inspector-tabs {
+            display: flex;
             background: #0f172a;
             border-bottom: 1px solid #334155;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
         }
 
-        .inspector-header h2 {
-            font-size: 14px;
-            font-weight: 600;
-        }
-
-        .inspector-controls {
-            display: flex;
-            gap: 8px;
-        }
-
-        .inspector-controls button {
-            padding: 4px 10px;
+        .inspector-tab {
+            padding: 10px 16px;
             font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            color: #94a3b8;
+            transition: all 0.2s;
+        }
+
+        .inspector-tab:hover {
+            color: #e2e8f0;
+            background: rgba(14, 165, 233, 0.1);
+        }
+
+        .inspector-tab.active {
+            color: #0ea5e9;
+            border-bottom-color: #0ea5e9;
         }
 
         .inspector-content {
@@ -188,11 +197,19 @@
             padding: 8px;
         }
 
+        .tab-panel {
+            display: none;
+        }
+
+        .tab-panel.active {
+            display: block;
+        }
+
         /* Tree View Styles */
         .tree-node {
             font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
-            font-size: 12px;
-            line-height: 1.6;
+            font-size: 11px;
+            line-height: 1.5;
         }
 
         .tree-key {
@@ -223,6 +240,7 @@
         .tree-expandable {
             cursor: pointer;
             user-select: none;
+            padding: 1px 0;
         }
 
         .tree-expandable:hover {
@@ -231,14 +249,14 @@
 
         .tree-toggle {
             display: inline-block;
-            width: 16px;
+            width: 14px;
             color: #64748b;
         }
 
         .tree-children {
-            margin-left: 16px;
+            margin-left: 14px;
             border-left: 1px solid #334155;
-            padding-left: 8px;
+            padding-left: 6px;
         }
 
         .tree-children.collapsed {
@@ -252,48 +270,158 @@
 
         .tree-type {
             color: #64748b;
-            font-size: 10px;
-            margin-left: 8px;
+            font-size: 9px;
+            margin-left: 6px;
         }
 
-        /* Events Log */
+        .tree-section {
+            background: #0f172a;
+            padding: 8px 10px;
+            margin: 8px 0 4px 0;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 12px;
+            color: #0ea5e9;
+            border-left: 3px solid #0ea5e9;
+        }
+
+        .tree-section.stream-info {
+            border-left-color: #22c55e;
+            color: #22c55e;
+        }
+
+        .tree-section.media-info {
+            border-left-color: #f472b6;
+            color: #f472b6;
+        }
+
         .events-section {
             border-top: 1px solid #334155;
-            max-height: 200px;
+            max-height: 180px;
             overflow-y: auto;
+            flex-shrink: 0;
         }
 
         .events-header {
-            padding: 8px 16px;
+            padding: 6px 12px;
             background: #0f172a;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 600;
             position: sticky;
             top: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
         .event-item {
-            padding: 4px 16px;
-            font-size: 11px;
+            padding: 3px 12px;
+            font-size: 10px;
             font-family: monospace;
             border-bottom: 1px solid #1e293b;
         }
 
         .event-time {
             color: #64748b;
-            margin-right: 8px;
+            margin-right: 6px;
         }
 
         .event-name {
             color: #fbbf24;
         }
 
-        .event-detail {
-            color: #94a3b8;
-            margin-left: 8px;
+        .event-name.error {
+            color: #f87171;
         }
 
-        /* Discovery Overlay */
+        .event-name.success {
+            color: #22c55e;
+        }
+
+        .event-detail {
+            color: #94a3b8;
+            margin-left: 6px;
+        }
+
+        .stream-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .info-card {
+            background: #0f172a;
+            border-radius: 6px;
+            padding: 10px;
+            border: 1px solid #334155;
+        }
+
+        .info-card.full-width {
+            grid-column: 1 / -1;
+        }
+
+        .info-card-title {
+            font-size: 10px;
+            color: #64748b;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .info-card-value {
+            font-size: 14px;
+            font-weight: 600;
+            color: #f1f5f9;
+            font-family: monospace;
+        }
+
+        .info-card-value.large {
+            font-size: 18px;
+        }
+
+        .track-item {
+            background: #0f172a;
+            border-radius: 4px;
+            padding: 8px 10px;
+            margin: 4px 0;
+            border: 1px solid #334155;
+        }
+
+        .track-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+
+        .track-type {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 600;
+        }
+
+        .track-type.video {
+            background: #3b82f6;
+            color: #fff;
+        }
+
+        .track-type.audio {
+            background: #22c55e;
+            color: #000;
+        }
+
+        .track-type.subtitle {
+            background: #f59e0b;
+            color: #000;
+        }
+
+        .track-detail {
+            font-size: 11px;
+            color: #94a3b8;
+            font-family: monospace;
+        }
+
         .overlay {
             position: fixed;
             inset: 0;
@@ -307,35 +435,35 @@
 
         .discovery-panel {
             background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-            border-radius: 16px;
+            border-radius: 12px;
             border: 2px solid #334155;
-            padding: 24px 32px;
+            padding: 20px 24px;
             width: 90%;
-            max-width: 500px;
+            max-width: 450px;
             max-height: 70vh;
             overflow-y: auto;
         }
 
         .discovery-title {
-            font-size: 20px;
-            margin-bottom: 16px;
+            font-size: 18px;
+            margin-bottom: 14px;
             text-align: center;
         }
 
         .discovery-status {
             text-align: center;
-            padding: 20px;
+            padding: 16px;
             color: #94a3b8;
         }
 
         .discovery-spinner {
-            width: 32px;
-            height: 32px;
+            width: 28px;
+            height: 28px;
             border: 3px solid #334155;
             border-top-color: #0ea5e9;
             border-radius: 50%;
             animation: spin 1s linear infinite;
-            margin: 0 auto 12px;
+            margin: 0 auto 10px;
         }
 
         @keyframes spin {
@@ -343,15 +471,15 @@
         }
 
         .discovery-devices {
-            margin: 12px 0;
+            margin: 10px 0;
         }
 
         .discovery-device {
             background: #0f172a;
             border: 2px solid #334155;
-            border-radius: 8px;
-            padding: 12px 16px;
-            margin: 8px 0;
+            border-radius: 6px;
+            padding: 10px 14px;
+            margin: 6px 0;
             cursor: pointer;
             transition: all 0.2s;
         }
@@ -367,31 +495,46 @@
         }
 
         .device-url {
-            font-size: 12px;
+            font-size: 11px;
             color: #94a3b8;
-            margin-top: 4px;
+            margin-top: 2px;
         }
 
         .discovery-manual {
-            margin-top: 16px;
-            padding-top: 16px;
+            margin-top: 14px;
+            padding-top: 14px;
             border-top: 1px solid #334155;
         }
 
         .discovery-manual input {
             width: 100%;
-            padding: 10px 14px;
+            padding: 8px 12px;
             background: #0f172a;
             border: 2px solid #334155;
             border-radius: 6px;
             color: #e2e8f0;
-            font-size: 14px;
+            font-size: 13px;
             margin-bottom: 8px;
         }
 
         .discovery-manual input:focus {
             outline: none;
             border-color: #0ea5e9;
+        }
+
+        .mpegts-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            background: #7c3aed;
+            color: #fff;
+            border-radius: 3px;
+            margin-left: 8px;
+        }
+
+        .refresh-controls {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
         }
     </style>
 </head>
@@ -403,6 +546,11 @@
             <button id="playBtn" class="btn">▶ Play</button>
             <button id="stopBtn" class="btn btn-secondary">⏹ Stop</button>
             <button id="discoverBtn" class="btn btn-secondary">🔍 Discover</button>
+            <label style="font-size: 12px; display: flex; align-items: center; gap: 6px;">
+                <input type="checkbox" id="useMpegts" checked> 
+                <span>Use mpegts.js</span>
+                <span class="mpegts-badge">TS Parser</span>
+            </label>
         </div>
 
         <div class="main-content">
@@ -422,27 +570,40 @@
                         <span class="status-value" id="statusResolution">-</span>
                     </div>
                     <div class="status-item">
-                        <span class="status-label">Duration:</span>
-                        <span class="status-value" id="statusDuration">-</span>
+                        <span class="status-label">Codec:</span>
+                        <span class="status-value" id="statusCodec">-</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Bitrate:</span>
+                        <span class="status-value" id="statusBitrate">-</span>
                     </div>
                     <div class="status-item">
                         <span class="status-label">Buffered:</span>
                         <span class="status-value" id="statusBuffered">-</span>
                     </div>
+                    <div class="status-item">
+                        <span class="status-label">Dropped:</span>
+                        <span class="status-value" id="statusDropped">-</span>
+                    </div>
                 </div>
             </div>
 
             <div class="inspector-panel">
-                <div class="inspector-header">
-                    <h2>Video Element Inspector</h2>
-                    <div class="inspector-controls">
-                        <button class="btn btn-secondary" id="refreshTreeBtn">↻ Refresh</button>
-                        <button class="btn btn-secondary" id="expandAllBtn">Expand All</button>
-                    </div>
+                <div class="inspector-tabs">
+                    <div class="inspector-tab active" data-tab="stream">Stream Info</div>
+                    <div class="inspector-tab" data-tab="video">Video Element</div>
+                    <div class="inspector-tab" data-tab="mpegts">mpegts.js</div>
                 </div>
-                <div class="inspector-content" id="treeView"></div>
+                <div class="inspector-content">
+                    <div id="streamTab" class="tab-panel active"></div>
+                    <div id="videoTab" class="tab-panel"></div>
+                    <div id="mpegtsTab" class="tab-panel"></div>
+                </div>
                 <div class="events-section">
-                    <div class="events-header">Events Log</div>
+                    <div class="events-header">
+                        <span>Events Log</span>
+                        <button class="btn btn-secondary btn-small" id="clearEventsBtn">Clear</button>
+                    </div>
                     <div id="eventsLog"></div>
                 </div>
             </div>
