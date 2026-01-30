@@ -698,6 +698,97 @@
             color: #64748b;
             font-style: italic;
         }
+
+        /* Subtitle Extraction Panel */
+        .subtitle-cue {
+            background: #1e293b;
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            border-radius: 6px;
+            border-left: 3px solid #f59e0b;
+        }
+
+        .subtitle-cue-time {
+            font-size: 10px;
+            color: #94a3b8;
+            font-family: monospace;
+            margin-bottom: 4px;
+        }
+
+        .subtitle-cue-text {
+            color: #e2e8f0;
+            font-size: 13px;
+        }
+
+        .subtitle-live-display {
+            background: rgba(0, 0, 0, 0.85);
+            color: #fff;
+            padding: 8px 16px;
+            text-align: center;
+            font-size: 18px;
+            min-height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-top: 1px solid #334155;
+        }
+
+        .subtitle-live-display.empty {
+            color: #64748b;
+            font-size: 12px;
+        }
+
+        .extract-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .vtt-preview {
+            background: #0f172a;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 11px;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+            color: #94a3b8;
+            border: 1px solid #334155;
+        }
+
+        .stream-pid-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+
+        .stream-pid-item {
+            background: #1e293b;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: monospace;
+            border: 1px solid #334155;
+        }
+
+        .stream-pid-item.subtitle {
+            border-color: #f59e0b;
+            color: #f59e0b;
+        }
+
+        .stream-pid-item.video {
+            border-color: #3b82f6;
+            color: #3b82f6;
+        }
+
+        .stream-pid-item.audio {
+            border-color: #22c55e;
+            color: #22c55e;
+        }
     </style>
 </head>
 <body>
@@ -837,7 +928,30 @@
                         
                         <button class="control-btn" id="ctrlRefreshTracks" title="Refresh track lists">↻ Refresh Tracks</button>
                     </div>
+                    
+                    <!-- Row 5: Subtitle Extraction -->
+                    <div class="controls-row">
+                        <div class="control-group">
+                            <label>Extract Subtitles:</label>
+                            <button class="control-btn" id="ctrlExtractSubs" title="Toggle subtitle extraction">Off</button>
+                        </div>
+                        
+                        <div class="control-group">
+                            <label>Format:</label>
+                            <select id="ctrlSubFormat">
+                                <option value="vtt">WebVTT</option>
+                                <option value="srt">SRT</option>
+                            </select>
+                        </div>
+                        
+                        <button class="control-btn" id="ctrlDownloadSubs" title="Download extracted subtitles" disabled>⬇ Download VTT</button>
+                        <button class="control-btn" id="ctrlAddTrack" title="Add extracted subtitles as track" disabled>+ Add as Track</button>
+                        <button class="control-btn" id="ctrlClearSubs" title="Clear extracted subtitles">🗑 Clear</button>
+                    </div>
                 </div>
+                
+                <!-- Live Subtitle Display -->
+                <div class="subtitle-live-display empty" id="liveSubtitleDisplay">Subtitle extraction off</div>
                 
                 <div class="video-status">
                     <div class="status-item">
@@ -876,11 +990,13 @@
                     <div class="inspector-tab active" data-tab="stream">Stream Info</div>
                     <div class="inspector-tab" data-tab="video">Video Element</div>
                     <div class="inspector-tab" data-tab="mpegts">mpegts.js</div>
+                    <div class="inspector-tab" data-tab="subtitles">Subtitles</div>
                 </div>
                 <div class="inspector-content">
                     <div id="streamTab" class="tab-panel active"></div>
                     <div id="videoTab" class="tab-panel"></div>
                     <div id="mpegtsTab" class="tab-panel"></div>
+                    <div id="subtitlesTab" class="tab-panel"></div>
                 </div>
                 <div class="events-section">
                     <div class="events-header">

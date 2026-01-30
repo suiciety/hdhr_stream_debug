@@ -68,6 +68,15 @@ const ctrlVideoTrack = document.getElementById('ctrlVideoTrack');
 const videoTrackCount = document.getElementById('videoTrackCount');
 const ctrlRefreshTracks = document.getElementById('ctrlRefreshTracks');
 
+// Subtitle extraction elements
+const ctrlExtractSubs = document.getElementById('ctrlExtractSubs');
+const ctrlSubFormat = document.getElementById('ctrlSubFormat');
+const ctrlDownloadSubs = document.getElementById('ctrlDownloadSubs');
+const ctrlAddTrack = document.getElementById('ctrlAddTrack');
+const ctrlClearSubs = document.getElementById('ctrlClearSubs');
+const liveSubtitleDisplay = document.getElementById('liveSubtitleDisplay');
+const subtitlesTab = document.getElementById('subtitlesTab');
+
 // ========================
 // State
 // ========================
@@ -77,6 +86,12 @@ let mediaInfo = null;
 let statisticsInfo = null;
 let expandedNodes = new Set(['video', 'mediaInfo', 'statisticsInfo']);
 let allExpanded = false;
+
+// Subtitle extraction state
+let subtitleExtractionEnabled = false;
+let extractedCues = [];
+let currentSubtitleText = '';
+let addedVTTTrack = null;
 
 // ========================
 // Video Event Logging
@@ -697,6 +712,7 @@ function refreshAllTabs() {
     refreshStreamTab();
     refreshVideoTab();
     refreshMpegtsTab();
+    refreshSubtitlesTab();
 }
 
 // ========================
@@ -973,6 +989,7 @@ function handleDiscoveryKeys(e) {
 refreshAllTabs();
 updateStatus();
 initVideoControls();
+initSubtitleExtraction();
 
 // Periodic updates
 setInterval(() => {
@@ -1362,6 +1379,15 @@ function formatTime(seconds) {
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
+function formatVTTTime(seconds) {
+    if (!isFinite(seconds) || isNaN(seconds)) return '00:00:00.000';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+}
+
 function updateVideoControlsUI() {
     // Update seek bar position
     if (isFinite(video.duration) && video.duration > 0) {
@@ -1384,4 +1410,282 @@ function updateVideoControlsUI() {
     
     // Disable PiP button if not supported
     ctrlPiP.disabled = !document.pictureInPictureEnabled;
+}
+
+// ========================
+// Subtitle Extraction
+// ========================
+
+function initSubtitleExtraction() {
+    // Toggle extraction
+    ctrlExtractSubs.addEventListener('click', () => {
+        subtitleExtractionEnabled = !subtitleExtractionEnabled;
+        ctrlExtractSubs.textContent = subtitleExtractionEnabled ? 'On' : 'Off';
+        ctrlExtractSubs.classList.toggle('active', subtitleExtractionEnabled);
+        
+        if (subtitleExtractionEnabled) {
+            logEvent('subtitle-extract', 'Extraction enabled', 'success');
+            liveSubtitleDisplay.textContent = 'Waiting for subtitles...';
+            liveSubtitleDisplay.classList.add('empty');
+        } else {
+            logEvent('subtitle-extract', 'Extraction disabled', 'info');
+            liveSubtitleDisplay.textContent = 'Subtitle extraction off';
+            liveSubtitleDisplay.classList.add('empty');
+        }
+        
+        refreshSubtitlesTab();
+    });
+    
+    // Format change
+    ctrlSubFormat.addEventListener('change', () => {
+        ctrlDownloadSubs.textContent = `⬇ Download ${ctrlSubFormat.value.toUpperCase()}`;
+        refreshSubtitlesTab();
+    });
+    
+    // Download subtitles
+    ctrlDownloadSubs.addEventListener('click', () => {
+        if (extractedCues.length === 0) {
+            alert('No subtitles extracted yet');
+            return;
+        }
+        
+        const format = ctrlSubFormat.value;
+        let content, filename, mimeType;
+        
+        if (format === 'vtt') {
+            content = generateVTT();
+            filename = 'subtitles.vtt';
+            mimeType = 'text/vtt';
+        } else {
+            content = generateSRT();
+            filename = 'subtitles.srt';
+            mimeType = 'text/srt';
+        }
+        
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        logEvent('subtitle-download', `Downloaded ${filename} (${extractedCues.length} cues)`, 'success');
+    });
+    
+    // Add as track
+    ctrlAddTrack.addEventListener('click', () => {
+        if (extractedCues.length === 0) {
+            alert('No subtitles extracted yet');
+            return;
+        }
+        
+        addExtractedSubtitlesAsTrack();
+    });
+    
+    // Clear subtitles
+    ctrlClearSubs.addEventListener('click', () => {
+        extractedCues = [];
+        currentSubtitleText = '';
+        liveSubtitleDisplay.textContent = subtitleExtractionEnabled ? 'Waiting for subtitles...' : 'Subtitle extraction off';
+        liveSubtitleDisplay.classList.add('empty');
+        ctrlDownloadSubs.disabled = true;
+        ctrlAddTrack.disabled = true;
+        
+        // Remove added track if exists
+        if (addedVTTTrack) {
+            try {
+                video.removeChild(addedVTTTrack);
+            } catch (e) {}
+            addedVTTTrack = null;
+        }
+        
+        logEvent('subtitle-clear', 'Cleared extracted subtitles', 'info');
+        refreshSubtitlesTab();
+    });
+}
+
+function addSubtitleCue(text, startTime, endTime) {
+    if (!subtitleExtractionEnabled) return;
+    
+    const cue = {
+        id: extractedCues.length + 1,
+        text: text.trim(),
+        start: startTime,
+        end: endTime || startTime + 5 // Default 5 second duration if not specified
+    };
+    
+    extractedCues.push(cue);
+    currentSubtitleText = text;
+    
+    // Update live display
+    liveSubtitleDisplay.textContent = text;
+    liveSubtitleDisplay.classList.remove('empty');
+    
+    // Enable download/add buttons
+    ctrlDownloadSubs.disabled = false;
+    ctrlAddTrack.disabled = false;
+    
+    // Clear after end time
+    if (endTime) {
+        const clearDelay = (endTime - video.currentTime) * 1000;
+        if (clearDelay > 0) {
+            setTimeout(() => {
+                if (currentSubtitleText === text) {
+                    liveSubtitleDisplay.textContent = '';
+                    liveSubtitleDisplay.classList.add('empty');
+                }
+            }, clearDelay);
+        }
+    }
+    
+    logEvent('subtitle-cue', `[${formatVTTTime(startTime)}] ${text.substring(0, 50)}...`, 'info');
+    refreshSubtitlesTab();
+}
+
+function generateVTT() {
+    let vtt = 'WEBVTT\n\n';
+    
+    extractedCues.forEach((cue, index) => {
+        vtt += `${index + 1}\n`;
+        vtt += `${formatVTTTime(cue.start)} --> ${formatVTTTime(cue.end)}\n`;
+        vtt += `${cue.text}\n\n`;
+    });
+    
+    return vtt;
+}
+
+function generateSRT() {
+    let srt = '';
+    
+    extractedCues.forEach((cue, index) => {
+        const startSRT = formatVTTTime(cue.start).replace('.', ',');
+        const endSRT = formatVTTTime(cue.end).replace('.', ',');
+        srt += `${index + 1}\n`;
+        srt += `${startSRT} --> ${endSRT}\n`;
+        srt += `${cue.text}\n\n`;
+    });
+    
+    return srt;
+}
+
+function addExtractedSubtitlesAsTrack() {
+    // Remove existing added track
+    if (addedVTTTrack) {
+        try {
+            video.removeChild(addedVTTTrack);
+        } catch (e) {}
+    }
+    
+    // Create VTT blob URL
+    const vttContent = generateVTT();
+    const blob = new Blob([vttContent], { type: 'text/vtt' });
+    const url = URL.createObjectURL(blob);
+    
+    // Create track element
+    addedVTTTrack = document.createElement('track');
+    addedVTTTrack.kind = 'subtitles';
+    addedVTTTrack.label = 'Extracted';
+    addedVTTTrack.srclang = 'en';
+    addedVTTTrack.src = url;
+    addedVTTTrack.default = true;
+    
+    video.appendChild(addedVTTTrack);
+    
+    // Enable the track
+    setTimeout(() => {
+        const tracks = video.textTracks;
+        for (let i = 0; i < tracks.length; i++) {
+            if (tracks[i].label === 'Extracted') {
+                tracks[i].mode = 'showing';
+                break;
+            }
+        }
+        refreshTrackLists();
+    }, 100);
+    
+    logEvent('subtitle-track', `Added ${extractedCues.length} cues as track`, 'success');
+}
+
+function refreshSubtitlesTab() {
+    let html = '<div class="refresh-controls">';
+    html += '<button class="btn btn-secondary btn-small" id="refreshSubsBtn">↻ Refresh</button>';
+    html += '</div>';
+    
+    // Extraction status
+    html += '<div class="tree-section">Extraction Status</div>';
+    html += '<div class="track-item">';
+    html += `<div class="track-detail">Enabled: ${subtitleExtractionEnabled ? 'Yes ✓' : 'No'}</div>`;
+    html += `<div class="track-detail">Cues Extracted: ${extractedCues.length}</div>`;
+    html += `<div class="track-detail">Output Format: ${ctrlSubFormat.value.toUpperCase()}</div>`;
+    html += '</div>';
+    
+    // Stream subtitle info from mpegts.js
+    if (mediaInfo) {
+        html += '<div class="tree-section">Detected Streams</div>';
+        html += '<div class="stream-pid-list">';
+        
+        // Show all detected streams
+        if (mediaInfo.hasVideo) {
+            html += `<span class="stream-pid-item video">Video: ${mediaInfo.videoCodec || 'unknown'}</span>`;
+        }
+        if (mediaInfo.hasAudio) {
+            html += `<span class="stream-pid-item audio">Audio: ${mediaInfo.audioCodec || 'unknown'}</span>`;
+        }
+        
+        // Note: mpegts.js doesn't expose subtitle PIDs directly
+        html += '</div>';
+        
+        html += '<div class="track-item">';
+        html += '<div class="track-detail" style="color: #f59e0b;">⚠ Note: mpegts.js primarily handles video/audio. DVB subtitles (bitmap-based) require specialized decoders. Text-based subtitles (CEA-608/708) may be embedded in video stream.</div>';
+        html += '</div>';
+    }
+    
+    // VTT/SRT Preview
+    if (extractedCues.length > 0) {
+        html += '<div class="tree-section">Generated Output Preview</div>';
+        const preview = ctrlSubFormat.value === 'vtt' ? generateVTT() : generateSRT();
+        html += `<div class="vtt-preview">${escapeHtml(preview.substring(0, 2000))}${preview.length > 2000 ? '\n...(truncated)' : ''}</div>`;
+    }
+    
+    // Recent cues list
+    html += '<div class="tree-section">Extracted Cues</div>';
+    if (extractedCues.length === 0) {
+        html += '<div class="track-item"><div class="track-detail">No cues extracted yet.</div></div>';
+    } else {
+        // Show last 20 cues (most recent first)
+        const recentCues = extractedCues.slice(-20).reverse();
+        recentCues.forEach(cue => {
+            html += '<div class="subtitle-cue">';
+            html += `<div class="subtitle-cue-time">${formatVTTTime(cue.start)} → ${formatVTTTime(cue.end)}</div>`;
+            html += `<div class="subtitle-cue-text">${escapeHtml(cue.text)}</div>`;
+            html += '</div>';
+        });
+        
+        if (extractedCues.length > 20) {
+            html += `<div class="track-detail" style="text-align: center; margin-top: 8px;">...and ${extractedCues.length - 20} more cues</div>`;
+        }
+    }
+    
+    // Manual cue input for testing
+    html += '<div class="tree-section">Manual Cue Input (for testing)</div>';
+    html += '<div class="track-item">';
+    html += '<input type="text" id="manualCueText" placeholder="Enter subtitle text..." style="width: 100%; margin-bottom: 8px; padding: 6px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #e2e8f0;">';
+    html += '<button class="btn btn-small" id="addManualCue">Add Cue at Current Time</button>';
+    html += '</div>';
+    
+    subtitlesTab.innerHTML = html;
+    
+    // Add event listeners
+    document.getElementById('refreshSubsBtn')?.addEventListener('click', refreshSubtitlesTab);
+    document.getElementById('addManualCue')?.addEventListener('click', () => {
+        const textInput = document.getElementById('manualCueText');
+        const text = textInput.value.trim();
+        if (text) {
+            addSubtitleCue(text, video.currentTime, video.currentTime + 5);
+            textInput.value = '';
+        }
+    });
 }
