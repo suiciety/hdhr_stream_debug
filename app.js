@@ -3,6 +3,7 @@
 import { discoverHDHR, discoverByIP, scanSubnet, detectLocalSubnet } from './discovery.js';
 import { DVBSubDecoder, TSSubtitleExtractor } from './dvbsub.js';
 import { FFmpegHelper, checkFFmpegCompatibility } from './ffmpeg-helper.js';
+import { WebOSMediaPlayer, isWebOS, getWebOSVersion } from './webos-media.js';
 
 // ========================
 // DOM Elements
@@ -95,6 +96,11 @@ const ctrlAnalyzeStream = document.getElementById('ctrlAnalyzeStream');
 const ctrlExtractSubsFFmpeg = document.getElementById('ctrlExtractSubsFFmpeg');
 const ctrlUnloadFFmpeg = document.getElementById('ctrlUnloadFFmpeg');
 
+// WebOS native player elements
+const useWebOSNativeCheckbox = document.getElementById('useWebOSNative');
+const webosBadge = document.getElementById('webosBadge');
+const webosNativeLabel = document.getElementById('webosNativeLabel');
+
 // ========================
 // State
 // ========================
@@ -119,6 +125,138 @@ let recentBitmaps = [];
 let ffmpegHelper = null;
 let ffmpegEnabled = false;
 let ffmpegLoaded = false;
+
+// WebOS native player state
+let webosPlayer = null;
+let useWebOSNative = false;
+let webosAvailable = false;
+
+// ========================
+// WebOS Native Player Setup
+// ========================
+
+async function initWebOSPlayer() {
+    // Check if WebOS is available
+    webosAvailable = isWebOS();
+    
+    if (webosAvailable) {
+        logEvent('webos', `WebOS detected: ${getWebOSVersion() || 'unknown version'}`, 'success');
+        
+        // Update UI
+        if (webosBadge) {
+            webosBadge.textContent = `WebOS ${getWebOSVersion() || 'Yes'}`;
+            webosBadge.classList.remove('unavailable');
+            webosBadge.classList.add('available');
+        }
+        if (webosNativeLabel) {
+            webosNativeLabel.style.display = 'inline';
+        }
+        if (useWebOSNativeCheckbox) {
+            useWebOSNativeCheckbox.disabled = false;
+        }
+        
+        // Create WebOS player instance
+        webosPlayer = new WebOSMediaPlayer();
+        const initialized = await webosPlayer.init();
+        
+        if (initialized) {
+            logEvent('webos', 'WebOS native player initialized', 'success');
+            
+            // Set up event handlers
+            webosPlayer.on('playing', () => {
+                logEvent('webos', 'Playing via native pipeline', 'success');
+                updateStatus();
+            });
+            
+            webosPlayer.on('paused', () => {
+                logEvent('webos', 'Paused', 'info');
+                updateStatus();
+            });
+            
+            webosPlayer.on('ended', () => {
+                logEvent('webos', 'Playback ended', 'info');
+                updateStatus();
+            });
+            
+            webosPlayer.on('error', (error) => {
+                logEvent('webos', `Error: ${JSON.stringify(error)}`, 'error');
+                updateStatus();
+            });
+            
+            webosPlayer.on('sourceInfo', (info) => {
+                logEvent('webos', `Source info received`, 'success');
+                console.log('WebOS Source Info:', info);
+                
+                // Check for subtitle streams
+                if (info.numPrograms > 0) {
+                    info.programInfo?.forEach((prog, idx) => {
+                        if (prog.subtitle_stream) {
+                            logEvent('webos', `Program ${idx}: Found ${prog.subtitle_stream.length} subtitle stream(s)`, 'success');
+                            prog.subtitle_stream.forEach((sub, sidx) => {
+                                logEvent('webos', `  Subtitle ${sidx}: PID=${sub.pid}, codec=${sub.codec || 'dvbsub'}`, 'info');
+                            });
+                        }
+                        if (prog.audio_stream) {
+                            logEvent('webos', `Program ${idx}: Found ${prog.audio_stream.length} audio stream(s)`, 'info');
+                        }
+                        if (prog.video_stream) {
+                            logEvent('webos', `Program ${idx}: Found ${prog.video_stream.length} video stream(s)`, 'info');
+                        }
+                    });
+                }
+            });
+            
+            webosPlayer.on('currentTime', (time) => {
+                // Update time display if needed
+            });
+            
+            webosPlayer.on('bufferRange', (range) => {
+                // Update buffer info if needed
+            });
+        } else {
+            logEvent('webos', 'Failed to initialize native player', 'error');
+            webosAvailable = false;
+            if (webosBadge) {
+                webosBadge.textContent = 'Init Failed';
+                webosBadge.classList.remove('available');
+                webosBadge.classList.add('unavailable');
+            }
+        }
+    } else {
+        logEvent('webos', 'Not running on WebOS', 'info');
+        
+        // Update UI
+        if (webosBadge) {
+            webosBadge.textContent = 'Not WebOS';
+            webosBadge.classList.remove('available');
+            webosBadge.classList.add('unavailable');
+        }
+        if (webosNativeLabel) {
+            webosNativeLabel.style.display = 'none';
+        }
+        if (useWebOSNativeCheckbox) {
+            useWebOSNativeCheckbox.disabled = true;
+            useWebOSNativeCheckbox.checked = false;
+        }
+    }
+}
+
+// Handle WebOS native checkbox
+if (useWebOSNativeCheckbox) {
+    useWebOSNativeCheckbox.addEventListener('change', (e) => {
+        useWebOSNative = e.target.checked;
+        
+        if (webosBadge) {
+            if (useWebOSNative && webosAvailable) {
+                webosBadge.classList.add('active');
+            } else {
+                webosBadge.classList.remove('active');
+            }
+        }
+        
+        logEvent('webos', useWebOSNative ? 'WebOS native player enabled' : 'WebOS native player disabled', 'info');
+    });
+}
 
 // ========================
 // Video Event Logging
@@ -763,7 +901,7 @@ document.querySelectorAll('.inspector-tab').forEach(tab => {
 // Playback Controls
 // ========================
 
-playBtn.addEventListener('click', () => {
+playBtn.addEventListener('click', async () => {
     const url = streamUrlInput.value.trim();
     if (!url) {
         alert('Please enter a stream URL');
@@ -777,7 +915,36 @@ playBtn.addEventListener('click', () => {
     mediaInfo = null;
     statisticsInfo = null;
     
-    if (useMpegtsCheckbox.checked && window.mpegts && mpegts.isSupported()) {
+    // Check if WebOS native player is enabled and available
+    if (useWebOSNative && webosAvailable && webosPlayer) {
+        // Use WebOS native player
+        logEvent('play', `Using WebOS native player: ${url}`, 'info');
+        
+        try {
+            const loaded = await webosPlayer.load(url, {
+                option: {
+                    mediaTransportType: 'URI',
+                    transmission: {
+                        playTime: { start: 0 }
+                    }
+                }
+            });
+            
+            if (loaded) {
+                logEvent('webos', 'Media loaded, starting playback', 'success');
+                
+                // Subscribe to media events
+                await webosPlayer.subscribe();
+                
+                // Start playback
+                await webosPlayer.play();
+            } else {
+                logEvent('webos', 'Failed to load media', 'error');
+            }
+        } catch (err) {
+            logEvent('webos', `Playback error: ${err.message}`, 'error');
+        }
+    } else if (useMpegtsCheckbox.checked && window.mpegts && mpegts.isSupported()) {
         // Use mpegts.js
         logEvent('play', `Using mpegts.js: ${url}`, 'info');
         
@@ -808,6 +975,12 @@ stopBtn.addEventListener('click', () => {
 });
 
 function stopPlayback() {
+    // Stop WebOS native player if active
+    if (webosPlayer && webosPlayer.isLoaded()) {
+        webosPlayer.unload();
+        logEvent('webos', 'Unloaded WebOS player', 'info');
+    }
+    
     if (mpegtsPlayer) {
         mpegtsPlayer.pause();
         mpegtsPlayer.unload();
@@ -2195,3 +2368,17 @@ function refreshSubtitlesTab() {
         }
     });
 }
+
+// ========================
+// Initialization
+// ========================
+
+// Initialize WebOS player if available
+initWebOSPlayer().catch(err => {
+    console.error('WebOS init error:', err);
+    logEvent('webos', `Init error: ${err.message}`, 'error');
+});
+
+// Initial status update
+updateStatus();
+logEvent('init', 'Stream Debugger initialized', 'success');

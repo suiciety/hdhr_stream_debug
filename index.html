@@ -583,6 +583,27 @@
             margin-left: 8px;
         }
 
+        .webos-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            background: #64748b;
+            color: #fff;
+            border-radius: 3px;
+            margin-left: 8px;
+        }
+
+        .webos-badge.available {
+            background: #22c55e;
+        }
+
+        .webos-badge.unavailable {
+            background: #64748b;
+        }
+
+        .webos-badge.active {
+            background: #0ea5e9;
+        }
+
         .refresh-controls {
             display: flex;
             gap: 8px;
@@ -912,6 +933,11 @@
                 <input type="checkbox" id="useMpegts" checked> 
                 <span>Use mpegts.js</span>
                 <span class="mpegts-badge">TS Parser</span>
+            </label>
+            <label style="font-size: 12px; display: flex; align-items: center; gap: 6px;" id="webosNativeLabel" title="Use WebOS native player for full DVB subtitle support">
+                <input type="checkbox" id="useWebOSNative"> 
+                <span>WebOS Native</span>
+                <span class="webos-badge" id="webosBadge">Checking...</span>
             </label>
         </div>
 
