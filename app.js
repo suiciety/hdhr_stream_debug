@@ -1,6 +1,7 @@
 // Stream Debugger - Main Application with mpegts.js integration
 
 import { discoverHDHR, discoverByIP, scanSubnet, detectLocalSubnet } from './discovery.js';
+import { DVBSubDecoder, TSSubtitleExtractor } from './dvbsub.js';
 
 // ========================
 // DOM Elements
@@ -68,14 +69,23 @@ const ctrlVideoTrack = document.getElementById('ctrlVideoTrack');
 const videoTrackCount = document.getElementById('videoTrackCount');
 const ctrlRefreshTracks = document.getElementById('ctrlRefreshTracks');
 
-// Subtitle extraction elements
-const ctrlExtractSubs = document.getElementById('ctrlExtractSubs');
+// DVB-SUB / Subtitle extraction elements
+const ctrlDvbSub = document.getElementById('ctrlDvbSub');
+const ctrlSubDisplay = document.getElementById('ctrlSubDisplay');
+const ctrlOcrLang = document.getElementById('ctrlOcrLang');
 const ctrlSubFormat = document.getElementById('ctrlSubFormat');
 const ctrlDownloadSubs = document.getElementById('ctrlDownloadSubs');
 const ctrlAddTrack = document.getElementById('ctrlAddTrack');
 const ctrlClearSubs = document.getElementById('ctrlClearSubs');
 const liveSubtitleDisplay = document.getElementById('liveSubtitleDisplay');
 const subtitlesTab = document.getElementById('subtitlesTab');
+const dvbStatusRow = document.getElementById('dvbStatusRow');
+const tesseractStatus = document.getElementById('tesseractStatus');
+const dvbPidStatus = document.getElementById('dvbPidStatus');
+const dvbBitmapCount = document.getElementById('dvbBitmapCount');
+const ocrQueueStatus = document.getElementById('ocrQueueStatus');
+const subtitleCanvas = document.getElementById('subtitleCanvas');
+const subtitleOverlay = document.getElementById('subtitleOverlay');
 
 // ========================
 // State
@@ -87,11 +97,15 @@ let statisticsInfo = null;
 let expandedNodes = new Set(['video', 'mediaInfo', 'statisticsInfo']);
 let allExpanded = false;
 
-// Subtitle extraction state
-let subtitleExtractionEnabled = false;
+// DVB-SUB / Subtitle extraction state
+let dvbSubEnabled = false;
+let dvbSubDecoder = null;
+let tsExtractor = null;
 let extractedCues = [];
 let currentSubtitleText = '';
 let addedVTTTrack = null;
+let detectedSubtitlePIDs = [];
+let recentBitmaps = [];
 
 // ========================
 // Video Event Logging
@@ -1413,27 +1427,92 @@ function updateVideoControlsUI() {
 }
 
 // ========================
-// Subtitle Extraction
+// DVB-SUB / Subtitle Extraction
 // ========================
 
 function initSubtitleExtraction() {
-    // Toggle extraction
-    ctrlExtractSubs.addEventListener('click', () => {
-        subtitleExtractionEnabled = !subtitleExtractionEnabled;
-        ctrlExtractSubs.textContent = subtitleExtractionEnabled ? 'On' : 'Off';
-        ctrlExtractSubs.classList.toggle('active', subtitleExtractionEnabled);
+    // Initialize DVB-SUB decoder
+    dvbSubDecoder = new DVBSubDecoder({
+        language: ctrlOcrLang.value,
+        displayMode: ctrlSubDisplay.value,
+        onSubtitle: handleDVBSubtitle,
+        onBitmap: handleDVBBitmap,
+        onOCRResult: handleOCRResult,
+        onError: (msg) => logEvent('dvb-error', msg, 'error'),
+        onLog: (msg) => logEvent('dvb-sub', msg, 'info')
+    });
+    
+    // Initialize TS extractor
+    tsExtractor = new TSSubtitleExtractor({
+        onPES: (pes) => {
+            if (dvbSubEnabled && dvbSubDecoder) {
+                dvbSubDecoder.decode(pes.data, pes.pts);
+            }
+        },
+        onPMT: (streams) => {
+            detectedSubtitlePIDs = streams;
+            dvbPidStatus.textContent = streams.length > 0 
+                ? streams.map(s => s.pid).join(', ')
+                : 'None found';
+            refreshSubtitlesTab();
+        },
+        onLog: (msg) => logEvent('ts-extractor', msg, 'info')
+    });
+    
+    // Toggle DVB-SUB detection
+    ctrlDvbSub.addEventListener('click', async () => {
+        dvbSubEnabled = !dvbSubEnabled;
+        ctrlDvbSub.textContent = dvbSubEnabled ? 'On' : 'Off';
+        ctrlDvbSub.classList.toggle('active', dvbSubEnabled);
+        dvbStatusRow.style.display = dvbSubEnabled ? 'flex' : 'none';
         
-        if (subtitleExtractionEnabled) {
-            logEvent('subtitle-extract', 'Extraction enabled', 'success');
-            liveSubtitleDisplay.textContent = 'Waiting for subtitles...';
+        if (dvbSubEnabled) {
+            logEvent('dvb-sub', 'DVB subtitle detection enabled', 'success');
+            liveSubtitleDisplay.textContent = 'Initializing OCR...';
             liveSubtitleDisplay.classList.add('empty');
+            
+            // Initialize Tesseract
+            tesseractStatus.textContent = 'Loading...';
+            await dvbSubDecoder.initTesseract();
+            tesseractStatus.textContent = dvbSubDecoder.tesseractReady ? 'Ready ✓' : 'Failed';
+            
+            if (dvbSubDecoder.tesseractReady) {
+                liveSubtitleDisplay.textContent = 'Waiting for DVB subtitles...';
+            }
+            
+            // Start fetching raw stream for subtitle extraction
+            startRawStreamCapture();
+            
         } else {
-            logEvent('subtitle-extract', 'Extraction disabled', 'info');
-            liveSubtitleDisplay.textContent = 'Subtitle extraction off';
+            logEvent('dvb-sub', 'DVB subtitle detection disabled', 'info');
+            liveSubtitleDisplay.textContent = 'DVB subtitle detection off';
             liveSubtitleDisplay.classList.add('empty');
+            subtitleOverlay.textContent = '';
+            
+            const ctx = subtitleCanvas.getContext('2d');
+            ctx.clearRect(0, 0, subtitleCanvas.width, subtitleCanvas.height);
+            
+            stopRawStreamCapture();
         }
         
         refreshSubtitlesTab();
+    });
+    
+    // Display mode change
+    ctrlSubDisplay.addEventListener('change', () => {
+        if (dvbSubDecoder) {
+            dvbSubDecoder.displayMode = ctrlSubDisplay.value;
+        }
+        logEvent('dvb-display', `Display mode: ${ctrlSubDisplay.value}`, 'info');
+    });
+    
+    // OCR language change
+    ctrlOcrLang.addEventListener('change', async () => {
+        if (dvbSubDecoder) {
+            tesseractStatus.textContent = 'Changing...';
+            await dvbSubDecoder.setLanguage(ctrlOcrLang.value);
+            tesseractStatus.textContent = 'Ready ✓';
+        }
     });
     
     // Format change
@@ -1488,11 +1567,17 @@ function initSubtitleExtraction() {
     // Clear subtitles
     ctrlClearSubs.addEventListener('click', () => {
         extractedCues = [];
+        recentBitmaps = [];
         currentSubtitleText = '';
-        liveSubtitleDisplay.textContent = subtitleExtractionEnabled ? 'Waiting for subtitles...' : 'Subtitle extraction off';
+        liveSubtitleDisplay.textContent = dvbSubEnabled ? 'Waiting for DVB subtitles...' : 'DVB subtitle detection off';
         liveSubtitleDisplay.classList.add('empty');
+        subtitleOverlay.textContent = '';
         ctrlDownloadSubs.disabled = true;
         ctrlAddTrack.disabled = true;
+        
+        // Clear canvas
+        const ctx = subtitleCanvas.getContext('2d');
+        ctx.clearRect(0, 0, subtitleCanvas.width, subtitleCanvas.height);
         
         // Remove added track if exists
         if (addedVTTTrack) {
@@ -1502,44 +1587,169 @@ function initSubtitleExtraction() {
             addedVTTTrack = null;
         }
         
+        // Reset decoder stats
+        if (dvbSubDecoder) {
+            dvbSubDecoder.reset();
+        }
+        
+        dvbBitmapCount.textContent = '0';
+        ocrQueueStatus.textContent = '0';
+        
         logEvent('subtitle-clear', 'Cleared extracted subtitles', 'info');
         refreshSubtitlesTab();
     });
+    
+    // Periodic status update
+    setInterval(updateDVBStatus, 500);
 }
 
-function addSubtitleCue(text, startTime, endTime) {
-    if (!subtitleExtractionEnabled) return;
+// Raw stream capture for DVB subtitle extraction
+let rawStreamReader = null;
+let rawStreamAbort = null;
+
+async function startRawStreamCapture() {
+    const url = streamUrlInput.value.trim();
+    if (!url) return;
     
+    try {
+        rawStreamAbort = new AbortController();
+        
+        const response = await fetch(url, {
+            signal: rawStreamAbort.signal
+        });
+        
+        if (!response.body) {
+            logEvent('raw-stream', 'ReadableStream not supported', 'error');
+            return;
+        }
+        
+        rawStreamReader = response.body.getReader();
+        logEvent('raw-stream', 'Started raw stream capture for subtitle extraction', 'success');
+        
+        // Read stream chunks
+        while (dvbSubEnabled) {
+            const { done, value } = await rawStreamReader.read();
+            if (done) break;
+            
+            if (tsExtractor && value) {
+                tsExtractor.parse(value.buffer);
+            }
+        }
+        
+    } catch (err) {
+        if (err.name !== 'AbortError') {
+            logEvent('raw-stream', `Error: ${err.message}`, 'error');
+        }
+    }
+}
+
+function stopRawStreamCapture() {
+    if (rawStreamAbort) {
+        rawStreamAbort.abort();
+        rawStreamAbort = null;
+    }
+    if (rawStreamReader) {
+        rawStreamReader.cancel().catch(() => {});
+        rawStreamReader = null;
+    }
+    if (tsExtractor) {
+        tsExtractor.reset();
+    }
+}
+
+function handleDVBSubtitle(subtitle) {
     const cue = {
         id: extractedCues.length + 1,
-        text: text.trim(),
-        start: startTime,
-        end: endTime || startTime + 5 // Default 5 second duration if not specified
+        text: subtitle.text,
+        start: subtitle.startTime,
+        end: subtitle.endTime,
+        confidence: subtitle.confidence,
+        source: subtitle.source
     };
     
     extractedCues.push(cue);
-    currentSubtitleText = text;
+    currentSubtitleText = subtitle.text;
     
-    // Update live display
-    liveSubtitleDisplay.textContent = text;
+    // Update live text display
+    liveSubtitleDisplay.textContent = subtitle.text;
     liveSubtitleDisplay.classList.remove('empty');
+    
+    // Update overlay
+    if (ctrlSubDisplay.value === 'ocr' || ctrlSubDisplay.value === 'both') {
+        subtitleOverlay.textContent = subtitle.text;
+    }
     
     // Enable download/add buttons
     ctrlDownloadSubs.disabled = false;
     ctrlAddTrack.disabled = false;
     
-    // Clear after end time
-    if (endTime) {
-        const clearDelay = (endTime - video.currentTime) * 1000;
-        if (clearDelay > 0) {
-            setTimeout(() => {
-                if (currentSubtitleText === text) {
-                    liveSubtitleDisplay.textContent = '';
-                    liveSubtitleDisplay.classList.add('empty');
-                }
-            }, clearDelay);
+    // Clear after duration
+    setTimeout(() => {
+        if (currentSubtitleText === subtitle.text) {
+            liveSubtitleDisplay.textContent = 'Waiting for DVB subtitles...';
+            liveSubtitleDisplay.classList.add('empty');
+            subtitleOverlay.textContent = '';
         }
+    }, (subtitle.endTime - subtitle.startTime) * 1000);
+}
+
+function handleDVBBitmap(bitmap) {
+    // Store recent bitmaps for display
+    recentBitmaps.push(bitmap);
+    if (recentBitmaps.length > 10) {
+        recentBitmaps.shift();
     }
+    
+    // Update bitmap count
+    if (dvbSubDecoder) {
+        dvbBitmapCount.textContent = dvbSubDecoder.stats.bitmapsDecoded.toString();
+    }
+    
+    // Display bitmap on canvas
+    if (ctrlSubDisplay.value === 'bitmap' || ctrlSubDisplay.value === 'both') {
+        const ctx = subtitleCanvas.getContext('2d');
+        
+        // Resize canvas to fit bitmap
+        subtitleCanvas.width = bitmap.width;
+        subtitleCanvas.height = bitmap.height;
+        
+        // Draw bitmap
+        ctx.drawImage(bitmap.canvas, 0, 0);
+    }
+}
+
+function handleOCRResult(result) {
+    const confidenceClass = result.confidence >= 80 ? 'high' : result.confidence >= 50 ? 'medium' : 'low';
+    logEvent('ocr-result', `"${result.text.substring(0, 40)}..." (${result.confidence.toFixed(0)}% confidence)`, 
+        result.confidence >= 50 ? 'success' : 'info');
+}
+
+function updateDVBStatus() {
+    if (!dvbSubEnabled || !dvbSubDecoder) return;
+    
+    const stats = dvbSubDecoder.getStats();
+    ocrQueueStatus.textContent = stats.ocrQueueLength.toString();
+}
+
+function addSubtitleCue(text, startTime, endTime) {
+    if (!dvbSubEnabled) return;
+    
+    const cue = {
+        id: extractedCues.length + 1,
+        text: text.trim(),
+        start: startTime,
+        end: endTime || startTime + 5
+    };
+    
+    extractedCues.push(cue);
+    currentSubtitleText = text;
+    
+    liveSubtitleDisplay.textContent = text;
+    liveSubtitleDisplay.classList.remove('empty');
+    subtitleOverlay.textContent = text;
+    
+    ctrlDownloadSubs.disabled = false;
+    ctrlAddTrack.disabled = false;
     
     logEvent('subtitle-cue', `[${formatVTTTime(startTime)}] ${text.substring(0, 50)}...`, 'info');
     refreshSubtitlesTab();
@@ -1614,52 +1824,69 @@ function refreshSubtitlesTab() {
     html += '<button class="btn btn-secondary btn-small" id="refreshSubsBtn">↻ Refresh</button>';
     html += '</div>';
     
-    // Extraction status
-    html += '<div class="tree-section">Extraction Status</div>';
+    // DVB-SUB Status
+    html += '<div class="tree-section">DVB-SUB Status</div>';
     html += '<div class="track-item">';
-    html += `<div class="track-detail">Enabled: ${subtitleExtractionEnabled ? 'Yes ✓' : 'No'}</div>`;
-    html += `<div class="track-detail">Cues Extracted: ${extractedCues.length}</div>`;
-    html += `<div class="track-detail">Output Format: ${ctrlSubFormat.value.toUpperCase()}</div>`;
+    html += `<div class="track-detail">DVB Detection: ${dvbSubEnabled ? '<span style="color: #22c55e">Enabled ✓</span>' : 'Disabled'}</div>`;
+    html += `<div class="track-detail">Display Mode: ${ctrlSubDisplay.value}</div>`;
+    html += `<div class="track-detail">OCR Language: ${ctrlOcrLang.value}</div>`;
+    
+    if (dvbSubDecoder) {
+        const stats = dvbSubDecoder.getStats();
+        html += `<div class="track-detail">Tesseract: ${stats.tesseractReady ? '<span style="color: #22c55e">Ready ✓</span>' : '<span style="color: #f59e0b">Not initialized</span>'}</div>`;
+        html += `<div class="track-detail">Bitmaps Decoded: ${stats.bitmapsDecoded}</div>`;
+        html += `<div class="track-detail">OCR Processed: ${stats.ocrProcessed}</div>`;
+        html += `<div class="track-detail">Errors: ${stats.errors}</div>`;
+    }
     html += '</div>';
     
-    // Stream subtitle info from mpegts.js
-    if (mediaInfo) {
-        html += '<div class="tree-section">Detected Streams</div>';
+    // Detected Subtitle PIDs
+    html += '<div class="tree-section">Detected Subtitle Streams</div>';
+    if (detectedSubtitlePIDs.length > 0) {
         html += '<div class="stream-pid-list">';
-        
-        // Show all detected streams
-        if (mediaInfo.hasVideo) {
-            html += `<span class="stream-pid-item video">Video: ${mediaInfo.videoCodec || 'unknown'}</span>`;
-        }
-        if (mediaInfo.hasAudio) {
-            html += `<span class="stream-pid-item audio">Audio: ${mediaInfo.audioCodec || 'unknown'}</span>`;
-        }
-        
-        // Note: mpegts.js doesn't expose subtitle PIDs directly
+        detectedSubtitlePIDs.forEach(stream => {
+            html += `<span class="stream-pid-item subtitle">PID ${stream.pid}: ${stream.typeName}</span>`;
+        });
         html += '</div>';
-        
-        html += '<div class="track-item">';
-        html += '<div class="track-detail" style="color: #f59e0b;">⚠ Note: mpegts.js primarily handles video/audio. DVB subtitles (bitmap-based) require specialized decoders. Text-based subtitles (CEA-608/708) may be embedded in video stream.</div>';
-        html += '</div>';
+    } else {
+        html += '<div class="track-item"><div class="track-detail">No DVB subtitle PIDs detected yet. Enable DVB-SUB detection and play a stream.</div></div>';
     }
+    
+    // Recent bitmaps preview
+    if (recentBitmaps.length > 0) {
+        html += '<div class="tree-section">Recent Bitmap Subtitles</div>';
+        recentBitmaps.slice(-5).reverse().forEach((bitmap, idx) => {
+            html += '<div class="dvb-bitmap-preview">';
+            html += `<div class="track-detail">Time: ${formatVTTTime(bitmap.time)} | Size: ${bitmap.width}×${bitmap.height}</div>`;
+            html += `<canvas id="bitmapPreview${idx}" width="${bitmap.width}" height="${bitmap.height}"></canvas>`;
+            html += '</div>';
+        });
+    }
+    
+    // Extraction summary
+    html += '<div class="tree-section">Extracted Cues</div>';
+    html += '<div class="track-item">';
+    html += `<div class="track-detail">Total Cues: ${extractedCues.length}</div>`;
+    html += `<div class="track-detail">Output Format: ${ctrlSubFormat.value.toUpperCase()}</div>`;
+    html += '</div>';
     
     // VTT/SRT Preview
     if (extractedCues.length > 0) {
         html += '<div class="tree-section">Generated Output Preview</div>';
         const preview = ctrlSubFormat.value === 'vtt' ? generateVTT() : generateSRT();
         html += `<div class="vtt-preview">${escapeHtml(preview.substring(0, 2000))}${preview.length > 2000 ? '\n...(truncated)' : ''}</div>`;
-    }
-    
-    // Recent cues list
-    html += '<div class="tree-section">Extracted Cues</div>';
-    if (extractedCues.length === 0) {
-        html += '<div class="track-item"><div class="track-detail">No cues extracted yet.</div></div>';
-    } else {
-        // Show last 20 cues (most recent first)
+        
+        // Recent cues list
+        html += '<div class="tree-section">Recent Cues (newest first)</div>';
         const recentCues = extractedCues.slice(-20).reverse();
         recentCues.forEach(cue => {
+            const confidenceClass = cue.confidence >= 80 ? 'high' : cue.confidence >= 50 ? 'medium' : 'low';
             html += '<div class="subtitle-cue">';
-            html += `<div class="subtitle-cue-time">${formatVTTTime(cue.start)} → ${formatVTTTime(cue.end)}</div>`;
+            html += `<div class="subtitle-cue-time">${formatVTTTime(cue.start)} → ${formatVTTTime(cue.end)}`;
+            if (cue.confidence) {
+                html += ` <span class="ocr-confidence ${confidenceClass}">(${cue.confidence.toFixed(0)}% confidence)</span>`;
+            }
+            html += '</div>';
             html += `<div class="subtitle-cue-text">${escapeHtml(cue.text)}</div>`;
             html += '</div>';
         });
@@ -1667,16 +1894,27 @@ function refreshSubtitlesTab() {
         if (extractedCues.length > 20) {
             html += `<div class="track-detail" style="text-align: center; margin-top: 8px;">...and ${extractedCues.length - 20} more cues</div>`;
         }
+    } else {
+        html += '<div class="track-item"><div class="track-detail">No cues extracted yet. Enable DVB-SUB and play a stream with DVB subtitles.</div></div>';
     }
     
     // Manual cue input for testing
-    html += '<div class="tree-section">Manual Cue Input (for testing)</div>';
+    html += '<div class="tree-section">Manual Test Input</div>';
     html += '<div class="track-item">';
-    html += '<input type="text" id="manualCueText" placeholder="Enter subtitle text..." style="width: 100%; margin-bottom: 8px; padding: 6px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #e2e8f0;">';
-    html += '<button class="btn btn-small" id="addManualCue">Add Cue at Current Time</button>';
+    html += '<input type="text" id="manualCueText" placeholder="Enter subtitle text for testing..." style="width: 100%; margin-bottom: 8px; padding: 6px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #e2e8f0;">';
+    html += '<button class="btn btn-small" id="addManualCue">Add Test Cue at Current Time</button>';
     html += '</div>';
     
     subtitlesTab.innerHTML = html;
+    
+    // Draw bitmap previews
+    recentBitmaps.slice(-5).reverse().forEach((bitmap, idx) => {
+        const previewCanvas = document.getElementById(`bitmapPreview${idx}`);
+        if (previewCanvas) {
+            const ctx = previewCanvas.getContext('2d');
+            ctx.drawImage(bitmap.canvas, 0, 0);
+        }
+    });
     
     // Add event listeners
     document.getElementById('refreshSubsBtn')?.addEventListener('click', refreshSubtitlesTab);
@@ -1684,7 +1922,11 @@ function refreshSubtitlesTab() {
         const textInput = document.getElementById('manualCueText');
         const text = textInput.value.trim();
         if (text) {
+            // Force enable for manual testing
+            const wasEnabled = dvbSubEnabled;
+            dvbSubEnabled = true;
             addSubtitleCue(text, video.currentTime, video.currentTime + 5);
+            dvbSubEnabled = wasEnabled;
             textInput.value = '';
         }
     });

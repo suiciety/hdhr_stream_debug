@@ -6,6 +6,8 @@
     <title>HDHomeRun Stream Debugger</title>
     <!-- mpegts.js for MPEG-TS stream parsing -->
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+    <!-- tesseract.js for OCR of DVB bitmap subtitles -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -118,10 +120,40 @@
             min-width: 400px;
         }
 
+        .video-container {
+            position: relative;
+            flex: 1;
+            display: flex;
+        }
+
         #videoPlayer {
             width: 100%;
             flex: 1;
             background: #000;
+        }
+
+        #subtitleCanvas {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        #subtitleOverlay {
+            position: absolute;
+            bottom: 50px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            color: #fff;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px #000, -1px -1px 2px #000, 1px -1px 2px #000, -1px 1px 2px #000;
+            padding: 8px 16px;
+            pointer-events: none;
+            z-index: 11;
         }
 
         .video-status {
@@ -789,6 +821,63 @@
             border-color: #22c55e;
             color: #22c55e;
         }
+
+        /* DVB-SUB / OCR Styles */
+        .ocr-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .ocr-spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid #334155;
+            border-top-color: #0ea5e9;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .dvb-bitmap-preview {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 8px;
+            margin-bottom: 8px;
+        }
+
+        .dvb-bitmap-preview canvas {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+            background: #000;
+        }
+
+        .dvb-bitmap-preview .ocr-result {
+            margin-top: 8px;
+            padding: 8px;
+            background: #1e293b;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .ocr-confidence {
+            font-size: 10px;
+            color: #94a3b8;
+        }
+
+        .ocr-confidence.high {
+            color: #22c55e;
+        }
+
+        .ocr-confidence.medium {
+            color: #fbbf24;
+        }
+
+        .ocr-confidence.low {
+            color: #f87171;
+        }
     </style>
 </head>
 <body>
@@ -808,7 +897,11 @@
 
         <div class="main-content">
             <div class="video-section">
-                <video id="videoPlayer"></video>
+                <div class="video-container">
+                    <video id="videoPlayer"></video>
+                    <canvas id="subtitleCanvas" width="720" height="80"></canvas>
+                    <div id="subtitleOverlay"></div>
+                </div>
                 
                 <!-- Comprehensive Video Controls -->
                 <div class="video-controls">
@@ -932,8 +1025,38 @@
                     <!-- Row 5: Subtitle Extraction -->
                     <div class="controls-row">
                         <div class="control-group">
-                            <label>Extract Subtitles:</label>
-                            <button class="control-btn" id="ctrlExtractSubs" title="Toggle subtitle extraction">Off</button>
+                            <label>DVB-SUB:</label>
+                            <button class="control-btn" id="ctrlDvbSub" title="Toggle DVB bitmap subtitle detection">Off</button>
+                        </div>
+                        
+                        <div class="control-group">
+                            <label>Display:</label>
+                            <select id="ctrlSubDisplay">
+                                <option value="bitmap">Bitmap</option>
+                                <option value="ocr" selected>OCR Text</option>
+                                <option value="both">Both</option>
+                            </select>
+                        </div>
+                        
+                        <div class="control-group">
+                            <label>OCR Lang:</label>
+                            <select id="ctrlOcrLang">
+                                <option value="eng">English</option>
+                                <option value="deu">German</option>
+                                <option value="fra">French</option>
+                                <option value="spa">Spanish</option>
+                                <option value="ita">Italian</option>
+                                <option value="por">Portuguese</option>
+                                <option value="nld">Dutch</option>
+                                <option value="pol">Polish</option>
+                                <option value="rus">Russian</option>
+                                <option value="ara">Arabic</option>
+                                <option value="hin">Hindi</option>
+                                <option value="chi_sim">Chinese (Simplified)</option>
+                                <option value="chi_tra">Chinese (Traditional)</option>
+                                <option value="jpn">Japanese</option>
+                                <option value="kor">Korean</option>
+                            </select>
                         </div>
                         
                         <div class="control-group">
@@ -944,14 +1067,34 @@
                             </select>
                         </div>
                         
-                        <button class="control-btn" id="ctrlDownloadSubs" title="Download extracted subtitles" disabled>⬇ Download VTT</button>
-                        <button class="control-btn" id="ctrlAddTrack" title="Add extracted subtitles as track" disabled>+ Add as Track</button>
+                        <button class="control-btn" id="ctrlDownloadSubs" title="Download extracted subtitles" disabled>⬇ Download</button>
+                        <button class="control-btn" id="ctrlAddTrack" title="Add extracted subtitles as track" disabled>+ Add Track</button>
                         <button class="control-btn" id="ctrlClearSubs" title="Clear extracted subtitles">🗑 Clear</button>
+                    </div>
+                    
+                    <!-- Row 6: DVB-SUB Status -->
+                    <div class="controls-row" id="dvbStatusRow" style="display: none;">
+                        <div class="control-group">
+                            <label>Tesseract:</label>
+                            <span class="value-display" id="tesseractStatus">Not loaded</span>
+                        </div>
+                        <div class="control-group">
+                            <label>DVB PIDs:</label>
+                            <span class="value-display" id="dvbPidStatus">Scanning...</span>
+                        </div>
+                        <div class="control-group">
+                            <label>Bitmaps:</label>
+                            <span class="value-display" id="dvbBitmapCount">0</span>
+                        </div>
+                        <div class="control-group">
+                            <label>OCR Queue:</label>
+                            <span class="value-display" id="ocrQueueStatus">0</span>
+                        </div>
                     </div>
                 </div>
                 
                 <!-- Live Subtitle Display -->
-                <div class="subtitle-live-display empty" id="liveSubtitleDisplay">Subtitle extraction off</div>
+                <div class="subtitle-live-display empty" id="liveSubtitleDisplay">DVB subtitle detection off</div>
                 
                 <div class="video-status">
                     <div class="status-item">
