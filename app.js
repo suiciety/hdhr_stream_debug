@@ -139,12 +139,15 @@ async function initWebOSPlayer() {
     // Check if WebOS is available
     webosAvailable = isWebOS();
     
+    console.log('[initWebOSPlayer] webosAvailable:', webosAvailable);
+    
     if (webosAvailable) {
-        logEvent('webos', `WebOS detected: ${getWebOSVersion() || 'unknown version'}`, 'success');
+        const version = getWebOSVersion();
+        logEvent('webos', `WebOS detected: ${version}`, 'success');
         
         // Update UI
         if (webosBadge) {
-            webosBadge.textContent = `WebOS ${getWebOSVersion() || 'Yes'}`;
+            webosBadge.textContent = `WebOS ${version}`;
             webosBadge.classList.remove('unavailable');
             webosBadge.classList.add('available');
         }
@@ -153,6 +156,9 @@ async function initWebOSPlayer() {
         }
         if (useWebOSNativeCheckbox) {
             useWebOSNativeCheckbox.disabled = false;
+            // Default to enabled on WebOS
+            useWebOSNativeCheckbox.checked = true;
+            useWebOSNative = true;
         }
         
         // Create WebOS player instance
@@ -2377,6 +2383,12 @@ function refreshSubtitlesTab() {
 initWebOSPlayer().catch(err => {
     console.error('WebOS init error:', err);
     logEvent('webos', `Init error: ${err.message}`, 'error');
+    // Make sure badge updates on error
+    if (webosBadge) {
+        webosBadge.textContent = 'Error';
+        webosBadge.classList.remove('available');
+        webosBadge.classList.add('unavailable');
+    }
 });
 
 // Initial status update

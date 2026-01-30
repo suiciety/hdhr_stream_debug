@@ -81,17 +81,39 @@ export class WebOSMediaPlayer {
     }
     
     /**
-     * Detect if running on webOS
+     * Static check for webOS availability (used before instantiation)
      */
-    detectWebOS() {
+    static isAvailable() {
         if (typeof window === 'undefined') return false;
         
-        // Check for webOS indicators
         const ua = navigator.userAgent || '';
-        const isWebOS = ua.includes('Web0S') || 
-                        ua.includes('webOS') || 
-                        typeof window.webOS !== 'undefined' ||
-                        typeof window.PalmSystem !== 'undefined';
+        
+        // Check multiple webOS indicators
+        // WebOS TV user agents contain 'Web0S' (with zero) or 'webOS'
+        // Also check for LG-specific markers
+        const hasWebOSUA = /Web0S|webOS|WEBOS|NetCast/i.test(ua);
+        const hasLGTV = /LG.*TV|LGTV|LGE/i.test(ua);
+        const hasWebOSGlobal = typeof window.webOS !== 'undefined';
+        const hasPalmSystem = typeof window.PalmSystem !== 'undefined';
+        const hasWebOSServiceBridge = typeof WebOSServiceBridge !== 'undefined';
+        
+        console.log('[WebOS Detection]', {
+            ua: ua.substring(0, 150),
+            hasWebOSUA,
+            hasLGTV,
+            hasWebOSGlobal,
+            hasPalmSystem,
+            hasWebOSServiceBridge
+        });
+        
+        return hasWebOSUA || hasLGTV || hasWebOSGlobal || hasPalmSystem || hasWebOSServiceBridge;
+    }
+    
+    /**
+     * Detect if running on webOS (instance method)
+     */
+    detectWebOS() {
+        const isWebOS = WebOSMediaPlayer.isAvailable();
         
         if (isWebOS) {
             this.onLog('WebOS detected');
@@ -583,14 +605,19 @@ export class WebOSMediaPlayer {
  * Quick check for webOS availability
  */
 export function isWebOS() {
-    return WebOSMediaPlayer.isAvailable();
+    try {
+        return WebOSMediaPlayer.isAvailable();
+    } catch (e) {
+        console.error('[isWebOS] Detection error:', e);
+        return false;
+    }
 }
 
 /**
- * Get webOS version info
+ * Get webOS version info as a string for display
  */
 export function getWebOSVersion() {
-    if (typeof window === 'undefined') return null;
+    if (typeof window === 'undefined') return 'N/A';
     
     const ua = navigator.userAgent || '';
     
@@ -600,25 +627,33 @@ export function getWebOSVersion() {
     if (chromeMatch) {
         const chromeVersion = parseInt(chromeMatch[1]);
         
-        // Map Chrome versions to webOS versions
-        const versionMap = {
-            120: 'webOS TV 25 (2025)',
-            108: 'webOS TV 24 (2024)',
-            94: 'webOS TV 23 (2023)',
-            87: 'webOS TV 22 (2022)',
-            79: 'webOS TV 6.x (2021)',
-            68: 'webOS TV 5.x (2020)',
-            53: 'webOS TV 4.x (2018-2019)',
-            38: 'webOS TV 3.x (2016-2017)'
-        };
+        // Map Chrome versions to webOS versions (sorted descending)
+        const versionMap = [
+            [120, 'TV25'],
+            [108, 'TV24'],
+            [94, 'TV23'],
+            [87, 'TV22'],
+            [79, 'TV6'],
+            [68, 'TV5'],
+            [53, 'TV4'],
+            [38, 'TV3']
+        ];
         
         // Find closest match
-        for (const [ver, name] of Object.entries(versionMap)) {
-            if (chromeVersion >= parseInt(ver)) {
-                return { chromeVersion, webOSVersion: name };
+        for (const [ver, name] of versionMap) {
+            if (chromeVersion >= ver) {
+                return name;
             }
         }
+        
+        return `Chrome${chromeVersion}`;
     }
     
-    return { chromeVersion: null, webOSVersion: 'Unknown webOS version' };
+    // Check for webOS version in UA directly
+    const webosMatch = ua.match(/webOS\.TV-(\d+\.\d+)/);
+    if (webosMatch) {
+        return `v${webosMatch[1]}`;
+    }
+    
+    return 'Yes';
 }
