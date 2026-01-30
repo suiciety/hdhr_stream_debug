@@ -36,6 +36,29 @@ const manualIPInput = document.getElementById('manualIP');
 const connectManualBtn = document.getElementById('connectManualBtn');
 const closeDiscoveryBtn = document.getElementById('closeDiscoveryBtn');
 
+// Video control elements
+const ctrlPlay = document.getElementById('ctrlPlay');
+const ctrlPause = document.getElementById('ctrlPause');
+const ctrlStop = document.getElementById('ctrlStop');
+const ctrlReload = document.getElementById('ctrlReload');
+const ctrlVolume = document.getElementById('ctrlVolume');
+const volumeValue = document.getElementById('volumeValue');
+const ctrlMute = document.getElementById('ctrlMute');
+const ctrlPlaybackRate = document.getElementById('ctrlPlaybackRate');
+const ctrlSkipBack = document.getElementById('ctrlSkipBack');
+const ctrlSkipFwd = document.getElementById('ctrlSkipFwd');
+const ctrlSeek = document.getElementById('ctrlSeek');
+const timeDisplay = document.getElementById('timeDisplay');
+const ctrlSeekTo = document.getElementById('ctrlSeekTo');
+const ctrlSeekBtn = document.getElementById('ctrlSeekBtn');
+const ctrlFullscreen = document.getElementById('ctrlFullscreen');
+const ctrlPiP = document.getElementById('ctrlPiP');
+const ctrlLoop = document.getElementById('ctrlLoop');
+const ctrlAutoplay = document.getElementById('ctrlAutoplay');
+const ctrlPreload = document.getElementById('ctrlPreload');
+const ctrlCrossOrigin = document.getElementById('ctrlCrossOrigin');
+const ctrlPlaysInline = document.getElementById('ctrlPlaysInline');
+
 // ========================
 // State
 // ========================
@@ -940,10 +963,12 @@ function handleDiscoveryKeys(e) {
 
 refreshAllTabs();
 updateStatus();
+initVideoControls();
 
 // Periodic updates
 setInterval(() => {
     updateStatus();
+    updateVideoControlsUI();
     // Only refresh stream tab frequently (for time updates)
     if (document.querySelector('[data-tab="stream"]').classList.contains('active')) {
         refreshStreamTab();
@@ -952,3 +977,218 @@ setInterval(() => {
 
 console.log('Stream Debugger initialized');
 logEvent('init', `mpegts.js ${window.mpegts ? 'available' : 'not loaded'}`, window.mpegts ? 'success' : 'error');
+
+// ========================
+// Video Controls Setup
+// ========================
+
+function initVideoControls() {
+    // Play/Pause/Stop/Reload
+    ctrlPlay.addEventListener('click', () => {
+        video.play().catch(err => logEvent('play-error', err.message, 'error'));
+    });
+    
+    ctrlPause.addEventListener('click', () => {
+        video.pause();
+    });
+    
+    ctrlStop.addEventListener('click', () => {
+        stopPlayback();
+        logEvent('stop', 'Playback stopped via controls', 'info');
+    });
+    
+    ctrlReload.addEventListener('click', () => {
+        const currentSrc = video.currentSrc || streamUrlInput.value;
+        if (currentSrc) {
+            stopPlayback();
+            playBtn.click();
+            logEvent('reload', 'Stream reloaded', 'info');
+        }
+    });
+    
+    // Volume Control
+    ctrlVolume.addEventListener('input', () => {
+        video.volume = parseFloat(ctrlVolume.value);
+        volumeValue.textContent = Math.round(video.volume * 100) + '%';
+        updateMuteButton();
+    });
+    
+    ctrlMute.addEventListener('click', () => {
+        video.muted = !video.muted;
+        updateMuteButton();
+        logEvent('mute', video.muted ? 'Muted' : 'Unmuted', 'info');
+    });
+    
+    // Playback Rate
+    ctrlPlaybackRate.addEventListener('change', () => {
+        video.playbackRate = parseFloat(ctrlPlaybackRate.value);
+        logEvent('playbackRate', `Set to ${video.playbackRate}x`, 'info');
+    });
+    
+    // Skip Controls
+    ctrlSkipBack.addEventListener('click', () => {
+        video.currentTime = Math.max(0, video.currentTime - 10);
+    });
+    
+    ctrlSkipFwd.addEventListener('click', () => {
+        if (isFinite(video.duration)) {
+            video.currentTime = Math.min(video.duration, video.currentTime + 10);
+        } else {
+            video.currentTime += 10;
+        }
+    });
+    
+    // Seek Bar
+    ctrlSeek.addEventListener('input', () => {
+        if (isFinite(video.duration)) {
+            const seekTime = (parseFloat(ctrlSeek.value) / 100) * video.duration;
+            video.currentTime = seekTime;
+        }
+    });
+    
+    // Seek To (specific time in seconds)
+    ctrlSeekBtn.addEventListener('click', () => {
+        const seekTime = parseFloat(ctrlSeekTo.value);
+        if (!isNaN(seekTime) && seekTime >= 0) {
+            video.currentTime = seekTime;
+            logEvent('seek', `Jumped to ${seekTime}s`, 'info');
+        }
+    });
+    
+    ctrlSeekTo.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') ctrlSeekBtn.click();
+    });
+    
+    // Fullscreen
+    ctrlFullscreen.addEventListener('click', () => {
+        if (document.fullscreenElement) {
+            document.exitFullscreen();
+        } else if (video.requestFullscreen) {
+            video.requestFullscreen();
+        } else if (video.webkitRequestFullscreen) {
+            video.webkitRequestFullscreen();
+        } else if (video.webkitEnterFullscreen) {
+            video.webkitEnterFullscreen();
+        }
+        logEvent('fullscreen', document.fullscreenElement ? 'Exited' : 'Entered', 'info');
+    });
+    
+    // Picture-in-Picture
+    ctrlPiP.addEventListener('click', async () => {
+        try {
+            if (document.pictureInPictureElement) {
+                await document.exitPictureInPicture();
+                logEvent('pip', 'Exited PiP', 'info');
+            } else if (document.pictureInPictureEnabled && video.requestPictureInPicture) {
+                await video.requestPictureInPicture();
+                logEvent('pip', 'Entered PiP', 'success');
+            } else {
+                logEvent('pip', 'PiP not supported', 'error');
+            }
+        } catch (err) {
+            logEvent('pip-error', err.message, 'error');
+        }
+    });
+    
+    // Loop Toggle
+    ctrlLoop.addEventListener('click', () => {
+        video.loop = !video.loop;
+        ctrlLoop.textContent = video.loop ? 'On' : 'Off';
+        ctrlLoop.classList.toggle('active', video.loop);
+        logEvent('loop', video.loop ? 'Enabled' : 'Disabled', 'info');
+    });
+    
+    // Autoplay Toggle
+    ctrlAutoplay.addEventListener('click', () => {
+        video.autoplay = !video.autoplay;
+        ctrlAutoplay.textContent = video.autoplay ? 'On' : 'Off';
+        ctrlAutoplay.classList.toggle('active', video.autoplay);
+        logEvent('autoplay', video.autoplay ? 'Enabled' : 'Disabled', 'info');
+    });
+    
+    // Preload
+    ctrlPreload.addEventListener('change', () => {
+        video.preload = ctrlPreload.value;
+        logEvent('preload', `Set to "${video.preload}"`, 'info');
+    });
+    
+    // CrossOrigin
+    ctrlCrossOrigin.addEventListener('change', () => {
+        video.crossOrigin = ctrlCrossOrigin.value || null;
+        logEvent('crossOrigin', ctrlCrossOrigin.value ? `Set to "${video.crossOrigin}"` : 'Removed', 'info');
+    });
+    
+    // PlaysInline Toggle
+    ctrlPlaysInline.addEventListener('click', () => {
+        video.playsInline = !video.playsInline;
+        ctrlPlaysInline.textContent = video.playsInline ? 'On' : 'Off';
+        ctrlPlaysInline.classList.toggle('active', video.playsInline);
+        logEvent('playsInline', video.playsInline ? 'Enabled' : 'Disabled', 'info');
+    });
+    
+    // Video events that update controls
+    video.addEventListener('volumechange', updateMuteButton);
+    video.addEventListener('ratechange', () => {
+        ctrlPlaybackRate.value = video.playbackRate;
+    });
+    
+    // Initial sync
+    updateMuteButton();
+    syncControlsToVideo();
+}
+
+function updateMuteButton() {
+    if (video.muted || video.volume === 0) {
+        ctrlMute.textContent = '🔇';
+    } else if (video.volume < 0.5) {
+        ctrlMute.textContent = '🔉';
+    } else {
+        ctrlMute.textContent = '🔊';
+    }
+}
+
+function syncControlsToVideo() {
+    ctrlVolume.value = video.volume;
+    volumeValue.textContent = Math.round(video.volume * 100) + '%';
+    ctrlPlaybackRate.value = video.playbackRate;
+    ctrlLoop.textContent = video.loop ? 'On' : 'Off';
+    ctrlLoop.classList.toggle('active', video.loop);
+    ctrlAutoplay.textContent = video.autoplay ? 'On' : 'Off';
+    ctrlAutoplay.classList.toggle('active', video.autoplay);
+    ctrlPreload.value = video.preload || 'auto';
+    ctrlCrossOrigin.value = video.crossOrigin || '';
+    ctrlPlaysInline.textContent = video.playsInline ? 'On' : 'Off';
+    ctrlPlaysInline.classList.toggle('active', video.playsInline);
+}
+
+function formatTime(seconds) {
+    if (!isFinite(seconds) || isNaN(seconds)) return '--:--:--';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function updateVideoControlsUI() {
+    // Update seek bar position
+    if (isFinite(video.duration) && video.duration > 0) {
+        ctrlSeek.value = (video.currentTime / video.duration) * 100;
+        ctrlSeek.disabled = false;
+    } else {
+        ctrlSeek.value = 0;
+        ctrlSeek.disabled = true;
+    }
+    
+    // Update time display
+    const current = formatTime(video.currentTime);
+    const duration = video.duration === Infinity ? 'LIVE' : formatTime(video.duration);
+    timeDisplay.textContent = `${current} / ${duration}`;
+    
+    // Update seek to input max
+    if (isFinite(video.duration)) {
+        ctrlSeekTo.max = Math.floor(video.duration);
+    }
+    
+    // Disable PiP button if not supported
+    ctrlPiP.disabled = !document.pictureInPictureEnabled;
+}
