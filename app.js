@@ -59,6 +59,15 @@ const ctrlPreload = document.getElementById('ctrlPreload');
 const ctrlCrossOrigin = document.getElementById('ctrlCrossOrigin');
 const ctrlPlaysInline = document.getElementById('ctrlPlaysInline');
 
+// Track control elements
+const ctrlSubtitles = document.getElementById('ctrlSubtitles');
+const subtitleCount = document.getElementById('subtitleCount');
+const ctrlAudioTrack = document.getElementById('ctrlAudioTrack');
+const audioTrackCount = document.getElementById('audioTrackCount');
+const ctrlVideoTrack = document.getElementById('ctrlVideoTrack');
+const videoTrackCount = document.getElementById('videoTrackCount');
+const ctrlRefreshTracks = document.getElementById('ctrlRefreshTracks');
+
 // ========================
 // State
 // ========================
@@ -1126,15 +1135,198 @@ function initVideoControls() {
         logEvent('playsInline', video.playsInline ? 'Enabled' : 'Disabled', 'info');
     });
     
+    // Track Controls
+    initTrackControls();
+    
     // Video events that update controls
     video.addEventListener('volumechange', updateMuteButton);
     video.addEventListener('ratechange', () => {
         ctrlPlaybackRate.value = video.playbackRate;
     });
     
+    // Update tracks when media loads
+    video.addEventListener('loadedmetadata', () => {
+        setTimeout(refreshTrackLists, 100); // Small delay for tracks to populate
+    });
+    
     // Initial sync
     updateMuteButton();
     syncControlsToVideo();
+}
+
+function initTrackControls() {
+    // Subtitle Track Selection
+    ctrlSubtitles.addEventListener('change', () => {
+        const selectedIndex = parseInt(ctrlSubtitles.value);
+        const textTracks = video.textTracks;
+        
+        // Disable all tracks first
+        for (let i = 0; i < textTracks.length; i++) {
+            textTracks[i].mode = 'disabled';
+        }
+        
+        // Enable selected track
+        if (selectedIndex >= 0 && selectedIndex < textTracks.length) {
+            textTracks[selectedIndex].mode = 'showing';
+            const track = textTracks[selectedIndex];
+            logEvent('subtitle', `Enabled: ${track.label || track.language || 'Track ' + selectedIndex}`, 'success');
+        } else {
+            logEvent('subtitle', 'Subtitles off', 'info');
+        }
+        
+        refreshAllTabs();
+    });
+    
+    // Audio Track Selection
+    ctrlAudioTrack.addEventListener('change', () => {
+        const selectedIndex = parseInt(ctrlAudioTrack.value);
+        const audioTracks = video.audioTracks;
+        
+        if (audioTracks && audioTracks.length > 0) {
+            // Disable all audio tracks
+            for (let i = 0; i < audioTracks.length; i++) {
+                audioTracks[i].enabled = (i === selectedIndex);
+            }
+            
+            if (selectedIndex >= 0 && selectedIndex < audioTracks.length) {
+                const track = audioTracks[selectedIndex];
+                logEvent('audioTrack', `Selected: ${track.label || track.language || 'Track ' + selectedIndex}`, 'success');
+            }
+        } else {
+            logEvent('audioTrack', 'Audio tracks not supported in this browser', 'error');
+        }
+        
+        refreshAllTabs();
+    });
+    
+    // Video Track Selection
+    ctrlVideoTrack.addEventListener('change', () => {
+        const selectedIndex = parseInt(ctrlVideoTrack.value);
+        const videoTracks = video.videoTracks;
+        
+        if (videoTracks && videoTracks.length > 0) {
+            // Only one video track can be selected at a time
+            for (let i = 0; i < videoTracks.length; i++) {
+                videoTracks[i].selected = (i === selectedIndex);
+            }
+            
+            if (selectedIndex >= 0 && selectedIndex < videoTracks.length) {
+                const track = videoTracks[selectedIndex];
+                logEvent('videoTrack', `Selected: ${track.label || track.language || 'Track ' + selectedIndex}`, 'success');
+            }
+        } else {
+            logEvent('videoTrack', 'Video tracks not supported in this browser', 'error');
+        }
+        
+        refreshAllTabs();
+    });
+    
+    // Refresh Tracks Button
+    ctrlRefreshTracks.addEventListener('click', () => {
+        refreshTrackLists();
+        logEvent('tracks', 'Track lists refreshed', 'info');
+    });
+    
+    // Listen for track changes
+    if (video.textTracks) {
+        video.textTracks.addEventListener('addtrack', () => refreshTrackLists());
+        video.textTracks.addEventListener('removetrack', () => refreshTrackLists());
+        video.textTracks.addEventListener('change', () => refreshTrackLists());
+    }
+    
+    if (video.audioTracks) {
+        video.audioTracks.addEventListener('addtrack', () => refreshTrackLists());
+        video.audioTracks.addEventListener('removetrack', () => refreshTrackLists());
+        video.audioTracks.addEventListener('change', () => refreshTrackLists());
+    }
+    
+    if (video.videoTracks) {
+        video.videoTracks.addEventListener('addtrack', () => refreshTrackLists());
+        video.videoTracks.addEventListener('removetrack', () => refreshTrackLists());
+        video.videoTracks.addEventListener('change', () => refreshTrackLists());
+    }
+    
+    // Initial population
+    refreshTrackLists();
+}
+
+function refreshTrackLists() {
+    // Refresh Text Tracks (Subtitles/Captions)
+    const textTracks = video.textTracks;
+    ctrlSubtitles.innerHTML = '<option value="-1">Off</option>';
+    
+    let activeSubtitleIndex = -1;
+    if (textTracks) {
+        for (let i = 0; i < textTracks.length; i++) {
+            const track = textTracks[i];
+            const label = track.label || track.language || `Track ${i + 1}`;
+            const kind = track.kind ? ` (${track.kind})` : '';
+            const option = document.createElement('option');
+            option.value = i;
+            option.textContent = `${label}${kind}`;
+            ctrlSubtitles.appendChild(option);
+            
+            if (track.mode === 'showing') {
+                activeSubtitleIndex = i;
+            }
+        }
+        subtitleCount.textContent = textTracks.length;
+    } else {
+        subtitleCount.textContent = '0';
+    }
+    ctrlSubtitles.value = activeSubtitleIndex;
+    
+    // Refresh Audio Tracks
+    const audioTracks = video.audioTracks;
+    ctrlAudioTrack.innerHTML = '';
+    
+    if (audioTracks && audioTracks.length > 0) {
+        for (let i = 0; i < audioTracks.length; i++) {
+            const track = audioTracks[i];
+            const label = track.label || track.language || `Audio ${i + 1}`;
+            const kind = track.kind ? ` (${track.kind})` : '';
+            const option = document.createElement('option');
+            option.value = i;
+            option.textContent = `${label}${kind}`;
+            if (track.enabled) {
+                option.selected = true;
+            }
+            ctrlAudioTrack.appendChild(option);
+        }
+        audioTrackCount.textContent = audioTracks.length;
+    } else {
+        const option = document.createElement('option');
+        option.value = '0';
+        option.textContent = audioTracks ? 'No audio tracks' : 'Not supported';
+        ctrlAudioTrack.appendChild(option);
+        audioTrackCount.textContent = audioTracks ? '0' : 'N/A';
+    }
+    
+    // Refresh Video Tracks
+    const videoTracks = video.videoTracks;
+    ctrlVideoTrack.innerHTML = '';
+    
+    if (videoTracks && videoTracks.length > 0) {
+        for (let i = 0; i < videoTracks.length; i++) {
+            const track = videoTracks[i];
+            const label = track.label || track.language || `Video ${i + 1}`;
+            const kind = track.kind ? ` (${track.kind})` : '';
+            const option = document.createElement('option');
+            option.value = i;
+            option.textContent = `${label}${kind}`;
+            if (track.selected) {
+                option.selected = true;
+            }
+            ctrlVideoTrack.appendChild(option);
+        }
+        videoTrackCount.textContent = videoTracks.length;
+    } else {
+        const option = document.createElement('option');
+        option.value = '0';
+        option.textContent = videoTracks ? 'No video tracks' : 'Not supported';
+        ctrlVideoTrack.appendChild(option);
+        videoTrackCount.textContent = videoTracks ? '0' : 'N/A';
+    }
 }
 
 function updateMuteButton() {
@@ -1159,6 +1351,7 @@ function syncControlsToVideo() {
     ctrlCrossOrigin.value = video.crossOrigin || '';
     ctrlPlaysInline.textContent = video.playsInline ? 'On' : 'Off';
     ctrlPlaysInline.classList.toggle('active', video.playsInline);
+    refreshTrackLists();
 }
 
 function formatTime(seconds) {

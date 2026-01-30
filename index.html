@@ -648,6 +648,56 @@
             border-radius: 4px;
             white-space: nowrap;
         }
+
+        .track-selector {
+            min-width: 120px;
+            max-width: 200px;
+        }
+
+        .track-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: 600;
+            margin-left: 4px;
+            vertical-align: middle;
+        }
+
+        .track-badge.subtitle {
+            background: #f59e0b;
+            color: #000;
+        }
+
+        .track-badge.audio {
+            background: #22c55e;
+            color: #000;
+        }
+
+        .track-badge.video {
+            background: #3b82f6;
+            color: #fff;
+        }
+
+        .track-badge.count {
+            background: #475569;
+            color: #e2e8f0;
+        }
+
+        .control-group.track-control {
+            flex-wrap: wrap;
+        }
+
+        .control-group.track-control select {
+            min-width: 100px;
+            max-width: 180px;
+        }
+
+        .no-tracks {
+            font-size: 10px;
+            color: #64748b;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -757,6 +807,35 @@
                             <label>PlaysInline:</label>
                             <button class="control-btn" id="ctrlPlaysInline" title="Toggle PlaysInline">Off</button>
                         </div>
+                    </div>
+                    
+                    <!-- Row 4: Tracks (Subtitles & Audio) -->
+                    <div class="controls-row">
+                        <div class="control-group track-control">
+                            <label>🔤 Subtitles:</label>
+                            <select id="ctrlSubtitles" class="track-selector">
+                                <option value="-1">Off</option>
+                            </select>
+                            <span class="track-badge subtitle" id="subtitleCount">0</span>
+                        </div>
+                        
+                        <div class="control-group track-control">
+                            <label>🔊 Audio Track:</label>
+                            <select id="ctrlAudioTrack" class="track-selector">
+                                <option value="0">Default</option>
+                            </select>
+                            <span class="track-badge audio" id="audioTrackCount">0</span>
+                        </div>
+                        
+                        <div class="control-group track-control">
+                            <label>🎬 Video Track:</label>
+                            <select id="ctrlVideoTrack" class="track-selector">
+                                <option value="0">Default</option>
+                            </select>
+                            <span class="track-badge video" id="videoTrackCount">0</span>
+                        </div>
+                        
+                        <button class="control-btn" id="ctrlRefreshTracks" title="Refresh track lists">↻ Refresh Tracks</button>
                     </div>
                 </div>
                 
