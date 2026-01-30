@@ -136,107 +136,105 @@ let webosAvailable = false;
 // ========================
 
 async function initWebOSPlayer() {
+    console.log('[initWebOSPlayer] Starting WebOS detection...');
+    
     // Check if WebOS is available
     webosAvailable = isWebOS();
     
     console.log('[initWebOSPlayer] webosAvailable:', webosAvailable);
     
-    if (webosAvailable) {
-        const version = getWebOSVersion();
-        logEvent('webos', `WebOS detected: ${version}`, 'success');
-        
-        // Update UI
-        if (webosBadge) {
-            webosBadge.textContent = `WebOS ${version}`;
+    // Update badge immediately
+    if (webosBadge) {
+        if (webosAvailable) {
+            const version = getWebOSVersion();
+            webosBadge.textContent = version ? `WebOS ${version}` : 'WebOS';
             webosBadge.classList.remove('unavailable');
             webosBadge.classList.add('available');
+            logEvent('webos', `WebOS detected: ${version || 'yes'}`, 'success');
+        } else {
+            webosBadge.textContent = 'Not WebOS';
+            webosBadge.classList.remove('available');
+            webosBadge.classList.add('unavailable');
+            logEvent('webos', 'Not running on WebOS', 'info');
         }
+    }
+    
+    if (webosAvailable) {
+        // Show WebOS controls
         if (webosNativeLabel) {
             webosNativeLabel.style.display = 'inline';
         }
         if (useWebOSNativeCheckbox) {
             useWebOSNativeCheckbox.disabled = false;
-            // Default to enabled on WebOS
             useWebOSNativeCheckbox.checked = true;
             useWebOSNative = true;
         }
         
         // Create WebOS player instance
         webosPlayer = new WebOSMediaPlayer();
-        const initialized = await webosPlayer.init();
+        logEvent('webos', 'WebOS player created', 'success');
         
-        if (initialized) {
-            logEvent('webos', 'WebOS native player initialized', 'success');
+        // Set up event handlers
+        webosPlayer.on('loaded', (data) => {
+            logEvent('webos', `Media loaded: ${data.mediaId}`, 'success');
+        });
+        
+        webosPlayer.on('playing', () => {
+            logEvent('webos', 'Playing via native pipeline', 'success');
+            updateStatus();
+        });
+        
+        webosPlayer.on('paused', () => {
+            logEvent('webos', 'Paused', 'info');
+            updateStatus();
+        });
+        
+        webosPlayer.on('ended', () => {
+            logEvent('webos', 'Playback ended', 'info');
+            updateStatus();
+        });
+        
+        webosPlayer.on('error', (error) => {
+            logEvent('webos', `Error: ${JSON.stringify(error)}`, 'error');
+            updateStatus();
+        });
+        
+        webosPlayer.on('sourceInfo', (info) => {
+            logEvent('webos', 'Source info received', 'success');
+            console.log('[WebOS] Full sourceInfo:', JSON.stringify(info, null, 2));
             
-            // Set up event handlers
-            webosPlayer.on('playing', () => {
-                logEvent('webos', 'Playing via native pipeline', 'success');
-                updateStatus();
-            });
-            
-            webosPlayer.on('paused', () => {
-                logEvent('webos', 'Paused', 'info');
-                updateStatus();
-            });
-            
-            webosPlayer.on('ended', () => {
-                logEvent('webos', 'Playback ended', 'info');
-                updateStatus();
-            });
-            
-            webosPlayer.on('error', (error) => {
-                logEvent('webos', `Error: ${JSON.stringify(error)}`, 'error');
-                updateStatus();
-            });
-            
-            webosPlayer.on('sourceInfo', (info) => {
-                logEvent('webos', `Source info received`, 'success');
-                console.log('WebOS Source Info:', info);
-                
-                // Check for subtitle streams
-                if (info.numPrograms > 0) {
-                    info.programInfo?.forEach((prog, idx) => {
-                        if (prog.subtitle_stream) {
-                            logEvent('webos', `Program ${idx}: Found ${prog.subtitle_stream.length} subtitle stream(s)`, 'success');
-                            prog.subtitle_stream.forEach((sub, sidx) => {
-                                logEvent('webos', `  Subtitle ${sidx}: PID=${sub.pid}, codec=${sub.codec || 'dvbsub'}`, 'info');
-                            });
-                        }
-                        if (prog.audio_stream) {
-                            logEvent('webos', `Program ${idx}: Found ${prog.audio_stream.length} audio stream(s)`, 'info');
-                        }
-                        if (prog.video_stream) {
-                            logEvent('webos', `Program ${idx}: Found ${prog.video_stream.length} video stream(s)`, 'info');
-                        }
-                    });
-                }
-            });
-            
-            webosPlayer.on('currentTime', (time) => {
-                // Update time display if needed
-            });
-            
-            webosPlayer.on('bufferRange', (range) => {
-                // Update buffer info if needed
-            });
-        } else {
-            logEvent('webos', 'Failed to initialize native player', 'error');
-            webosAvailable = false;
-            if (webosBadge) {
-                webosBadge.textContent = 'Init Failed';
-                webosBadge.classList.remove('available');
-                webosBadge.classList.add('unavailable');
+            // Log program/stream info
+            if (info.programInfo) {
+                info.programInfo.forEach((prog, idx) => {
+                    if (prog.subtitleStreamInfo) {
+                        logEvent('webos', `Program ${idx}: ${prog.subtitleStreamInfo.length} subtitle stream(s)`, 'success');
+                    }
+                    if (prog.audioStreamInfo) {
+                        logEvent('webos', `Program ${idx}: ${prog.audioStreamInfo.length} audio stream(s)`, 'info');
+                    }
+                    if (prog.videoStreamInfo) {
+                        logEvent('webos', `Program ${idx}: ${prog.videoStreamInfo.length} video stream(s)`, 'info');
+                    }
+                });
             }
-        }
-    } else {
-        logEvent('webos', 'Not running on WebOS', 'info');
+        });
         
-        // Update UI
-        if (webosBadge) {
-            webosBadge.textContent = 'Not WebOS';
-            webosBadge.classList.remove('available');
-            webosBadge.classList.add('unavailable');
-        }
+        webosPlayer.on('subtitles', (subs) => {
+            logEvent('webos', `Subtitles detected: ${JSON.stringify(subs)}`, 'success');
+        });
+        
+        webosPlayer.on('timeupdate', (time) => {
+            // Update time display if needed
+        });
+        
+        webosPlayer.on('buffering', (isBuffering) => {
+            if (isBuffering) {
+                logEvent('webos', 'Buffering...', 'info');
+            }
+        });
+        
+    } else {
+        // Hide WebOS controls on non-WebOS
         if (webosNativeLabel) {
             webosNativeLabel.style.display = 'none';
         }
@@ -927,22 +925,10 @@ playBtn.addEventListener('click', async () => {
         logEvent('play', `Using WebOS native player: ${url}`, 'info');
         
         try {
-            const loaded = await webosPlayer.load(url, {
-                option: {
-                    mediaTransportType: 'URI',
-                    transmission: {
-                        playTime: { start: 0 }
-                    }
-                }
-            });
+            const loaded = await webosPlayer.load(url);
             
             if (loaded) {
                 logEvent('webos', 'Media loaded, starting playback', 'success');
-                
-                // Subscribe to media events
-                await webosPlayer.subscribe();
-                
-                // Start playback
                 await webosPlayer.play();
             } else {
                 logEvent('webos', 'Failed to load media', 'error');

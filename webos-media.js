@@ -1,428 +1,316 @@
 /**
- * WebOS Native Media Playback using Luna Services
+ * WebOS Native Media Playback
  * 
- * Uses com.webos.media Luna API for hardware-accelerated playback
- * with native DVB subtitle support (same as DLNA player uses).
- * 
- * This bypasses the HTML5 video element limitations and uses
- * the native webOS media pipeline which has full codec and
- * subtitle support.
- * 
- * Requirements:
- * - Must run on webOS TV (not in browser)
- * - App needs appropriate permissions in appinfo.json
- * - Uses WebOSServiceBridge for Luna calls
+ * Uses com.webos.media Luna service for hardware-accelerated playback
+ * with native DVB subtitle support.
  */
 
+// ============================================================
+// WebOS Detection
+// ============================================================
+
+/**
+ * Check if running on webOS TV
+ */
+export function isWebOS() {
+    if (typeof window === 'undefined') return false;
+    
+    // Method 1: Check for webOS global object
+    if (typeof window.webOS !== 'undefined') {
+        console.log('[WebOS] Detected via window.webOS');
+        return true;
+    }
+    
+    // Method 2: Check for PalmSystem (older webOS)
+    if (typeof window.PalmSystem !== 'undefined') {
+        console.log('[WebOS] Detected via PalmSystem');
+        return true;
+    }
+    
+    // Method 3: Check for WebOSServiceBridge
+    if (typeof window.WebOSServiceBridge !== 'undefined') {
+        console.log('[WebOS] Detected via WebOSServiceBridge');
+        return true;
+    }
+    
+    // Method 4: Check user agent
+    const ua = navigator.userAgent || '';
+    if (/Web0S|webOS|WEBOS/i.test(ua)) {
+        console.log('[WebOS] Detected via User Agent:', ua);
+        return true;
+    }
+    
+    // Method 5: Check for LG TV markers
+    if (/LG.*SmartTV|LGE|LGTV|NetCast/i.test(ua)) {
+        console.log('[WebOS] Detected via LG TV UA:', ua);
+        return true;
+    }
+    
+    console.log('[WebOS] Not detected. UA:', ua);
+    return false;
+}
+
+/**
+ * Get webOS version string for display
+ */
+export function getWebOSVersion() {
+    const ua = navigator.userAgent || '';
+    
+    // Try Chrome version mapping
+    const chromeMatch = ua.match(/Chrome\/(\d+)/);
+    if (chromeMatch) {
+        const v = parseInt(chromeMatch[1]);
+        if (v >= 120) return 'TV25';
+        if (v >= 108) return 'TV24';
+        if (v >= 94) return 'TV23';
+        if (v >= 87) return 'TV22';
+        if (v >= 79) return 'TV6';
+        if (v >= 68) return 'TV5';
+        if (v >= 53) return 'TV4';
+        if (v >= 38) return 'TV3';
+    }
+    
+    return '';
+}
+
+// ============================================================
+// Luna Service Bridge
+// ============================================================
+
+/**
+ * Create a Luna service bridge
+ */
+function createBridge() {
+    if (typeof window.WebOSServiceBridge !== 'undefined') {
+        return new window.WebOSServiceBridge();
+    }
+    return null;
+}
+
+/**
+ * Make a Luna service call
+ */
+function lunaCall(uri, params = {}) {
+    return new Promise((resolve, reject) => {
+        const bridge = createBridge();
+        if (!bridge) {
+            reject(new Error('WebOSServiceBridge not available'));
+            return;
+        }
+        
+        console.log('[Luna] Calling:', uri, JSON.stringify(params));
+        
+        bridge.onservicecallback = (response) => {
+            try {
+                const result = JSON.parse(response);
+                console.log('[Luna] Response:', JSON.stringify(result).substring(0, 200));
+                
+                if (result.returnValue === false) {
+                    reject(new Error(result.errorText || 'Luna call failed'));
+                } else {
+                    resolve(result);
+                }
+            } catch (e) {
+                reject(new Error('Failed to parse response: ' + e.message));
+            }
+        };
+        
+        bridge.call(uri, JSON.stringify(params));
+    });
+}
+
+/**
+ * Subscribe to Luna service events
+ */
+function lunaSubscribe(uri, params = {}, onMessage) {
+    const bridge = createBridge();
+    if (!bridge) {
+        console.error('[Luna] Cannot subscribe - no bridge');
+        return null;
+    }
+    
+    params.subscribe = true;
+    console.log('[Luna] Subscribing:', uri);
+    
+    bridge.onservicecallback = (response) => {
+        try {
+            const result = JSON.parse(response);
+            onMessage(result);
+        } catch (e) {
+            console.error('[Luna] Parse error:', e);
+        }
+    };
+    
+    bridge.call(uri, JSON.stringify(params));
+    return bridge;
+}
+
+// ============================================================
+// WebOS Media Player Class
+// ============================================================
+
 export class WebOSMediaPlayer {
-    constructor(options = {}) {
-        this.onLog = options.onLog || console.log;
-        this.onError = options.onError || console.error;
-        this.onStateChange = options.onStateChange || (() => {});
-        this.onTimeUpdate = options.onTimeUpdate || (() => {});
-        this.onSourceInfo = options.onSourceInfo || (() => {});
-        this.onSubtitleData = options.onSubtitleData || (() => {});
-        
+    constructor() {
         this.mediaId = null;
-        this.windowId = null;
-        this.appId = null;
+        this.subscription = null;
+        this.appId = 'com.hdhr.streamdebug';
         this.isPlaying = false;
-        this.currentTime = 0;
-        this.duration = 0;
-        this.sourceInfo = null;
+        this.listeners = {};
         
-        // WebOS detection
-        this.isWebOS = this.detectWebOS();
-        this.bridge = null;
-        
-        // Subscription handles
-        this.subscriptionHandle = null;
-        
-        // Event listeners
-        this.eventListeners = new Map();
+        // Get app ID
+        this._detectAppId();
+    }
+    
+    _detectAppId() {
+        try {
+            if (window.webOS && window.webOS.fetchAppId) {
+                this.appId = window.webOS.fetchAppId();
+            } else if (window.PalmSystem && window.PalmSystem.identifier) {
+                this.appId = window.PalmSystem.identifier;
+            }
+        } catch (e) {
+            console.log('[WebOS] Using default appId');
+        }
+        console.log('[WebOS] App ID:', this.appId);
     }
     
     /**
      * Add event listener
-     * Supported events: playing, paused, ended, error, sourceInfo, currentTime, bufferRange
      */
     on(event, callback) {
-        if (!this.eventListeners.has(event)) {
-            this.eventListeners.set(event, []);
-        }
-        this.eventListeners.get(event).push(callback);
+        if (!this.listeners[event]) this.listeners[event] = [];
+        this.listeners[event].push(callback);
         return this;
     }
     
     /**
-     * Remove event listener
+     * Emit event
      */
-    off(event, callback) {
-        if (!this.eventListeners.has(event)) return this;
-        const listeners = this.eventListeners.get(event);
-        const idx = listeners.indexOf(callback);
-        if (idx > -1) listeners.splice(idx, 1);
-        return this;
-    }
-    
-    /**
-     * Emit event to listeners
-     */
-    emit(event, data) {
-        if (this.eventListeners.has(event)) {
-            this.eventListeners.get(event).forEach(cb => {
-                try {
-                    cb(data);
-                } catch (e) {
-                    this.onError(`Event handler error: ${e.message}`);
-                }
+    _emit(event, data) {
+        if (this.listeners[event]) {
+            this.listeners[event].forEach(cb => {
+                try { cb(data); } catch (e) { console.error('[WebOS] Event error:', e); }
             });
         }
     }
     
     /**
-     * Static check for webOS availability (used before instantiation)
+     * Load and play media
      */
-    static isAvailable() {
-        if (typeof window === 'undefined') return false;
-        
-        const ua = navigator.userAgent || '';
-        
-        // Check multiple webOS indicators
-        // WebOS TV user agents contain 'Web0S' (with zero) or 'webOS'
-        // Also check for LG-specific markers
-        const hasWebOSUA = /Web0S|webOS|WEBOS|NetCast/i.test(ua);
-        const hasLGTV = /LG.*TV|LGTV|LGE/i.test(ua);
-        const hasWebOSGlobal = typeof window.webOS !== 'undefined';
-        const hasPalmSystem = typeof window.PalmSystem !== 'undefined';
-        const hasWebOSServiceBridge = typeof WebOSServiceBridge !== 'undefined';
-        
-        console.log('[WebOS Detection]', {
-            ua: ua.substring(0, 150),
-            hasWebOSUA,
-            hasLGTV,
-            hasWebOSGlobal,
-            hasPalmSystem,
-            hasWebOSServiceBridge
-        });
-        
-        return hasWebOSUA || hasLGTV || hasWebOSGlobal || hasPalmSystem || hasWebOSServiceBridge;
-    }
-    
-    /**
-     * Detect if running on webOS (instance method)
-     */
-    detectWebOS() {
-        const isWebOS = WebOSMediaPlayer.isAvailable();
-        
-        if (isWebOS) {
-            this.onLog('WebOS detected');
-        } else {
-            this.onLog('Not running on webOS - native playback unavailable');
-        }
-        
-        return isWebOS;
-    }
-    
-    /**
-     * Initialize the Luna service bridge
-     */
-    async init() {
-        if (!this.isWebOS) {
-            this.onError('WebOS native playback requires running on webOS TV');
-            return false;
+    async load(url) {
+        // Unload any existing media first
+        if (this.mediaId) {
+            await this.unload();
         }
         
         try {
-            // Try to create WebOSServiceBridge
-            if (typeof WebOSServiceBridge !== 'undefined') {
-                this.bridge = new WebOSServiceBridge();
-                this.onLog('WebOSServiceBridge initialized');
-            } else if (typeof window.webOS !== 'undefined' && window.webOS.service) {
-                // Alternative: use webOS.service.request
-                this.bridge = 'webOS.service';
-                this.onLog('Using webOS.service for Luna calls');
-            } else {
-                throw new Error('No Luna service bridge available');
-            }
+            console.log('[WebOS] Loading:', url);
             
-            // Get app ID from webOS
-            this.appId = await this.getAppId();
-            this.onLog(`App ID: ${this.appId}`);
-            
-            return true;
-            
-        } catch (err) {
-            this.onError(`Init failed: ${err.message}`);
-            return false;
-        }
-    }
-    
-    /**
-     * Get the app ID from webOS
-     */
-    async getAppId() {
-        // Try multiple methods
-        if (typeof window.webOS !== 'undefined' && window.webOS.fetchAppId) {
-            return window.webOS.fetchAppId();
-        }
-        
-        if (typeof PalmSystem !== 'undefined' && PalmSystem.identifier) {
-            return PalmSystem.identifier;
-        }
-        
-        // Fallback - read from appinfo.json would need a fetch
-        return 'com.hdhr.streamdebug'; // Default from our appinfo.json
-    }
-    
-    /**
-     * Make a Luna service call
-     */
-    lunaCall(uri, params = {}) {
-        return new Promise((resolve, reject) => {
-            if (!this.bridge) {
-                reject(new Error('Luna bridge not initialized'));
-                return;
-            }
-            
-            const paramsStr = JSON.stringify(params);
-            this.onLog(`Luna call: ${uri} ${paramsStr.substring(0, 100)}...`);
-            
-            if (this.bridge === 'webOS.service') {
-                // Use webOS.service.request
-                window.webOS.service.request(uri, {
-                    parameters: params,
-                    onSuccess: (res) => {
-                        this.onLog(`Luna success: ${JSON.stringify(res).substring(0, 100)}...`);
-                        resolve(res);
-                    },
-                    onFailure: (err) => {
-                        this.onError(`Luna error: ${JSON.stringify(err)}`);
-                        reject(new Error(err.errorText || 'Luna call failed'));
-                    }
-                });
-            } else {
-                // Use WebOSServiceBridge
-                const callback = (response) => {
-                    try {
-                        const res = JSON.parse(response);
-                        if (res.returnValue === false) {
-                            reject(new Error(res.errorText || 'Luna call failed'));
-                        } else {
-                            resolve(res);
-                        }
-                    } catch (e) {
-                        reject(e);
-                    }
-                };
-                
-                this.bridge.onservicecallback = callback;
-                this.bridge.call(uri, paramsStr);
-            }
-        });
-    }
-    
-    /**
-     * Subscribe to Luna service events
-     */
-    lunaSubscribe(uri, params = {}, onMessage) {
-        if (!this.bridge) {
-            this.onError('Luna bridge not initialized');
-            return null;
-        }
-        
-        params.subscribe = true;
-        const paramsStr = JSON.stringify(params);
-        
-        if (this.bridge === 'webOS.service') {
-            return window.webOS.service.request(uri, {
-                parameters: params,
-                onSuccess: onMessage,
-                onFailure: (err) => this.onError(`Subscription error: ${err.errorText}`),
-                subscribe: true
-            });
-        } else {
-            // WebOSServiceBridge subscription
-            const bridge = new WebOSServiceBridge();
-            bridge.onservicecallback = (response) => {
-                try {
-                    onMessage(JSON.parse(response));
-                } catch (e) {
-                    this.onError(`Parse error: ${e.message}`);
-                }
-            };
-            bridge.call(uri, paramsStr);
-            return bridge;
-        }
-    }
-    
-    /**
-     * Load media using native webOS pipeline
-     * This is equivalent to what DLNA player does
-     */
-    async load(url, options = {}) {
-        if (!this.bridge) {
-            await this.init();
-        }
-        
-        if (!this.isWebOS) {
-            this.onError('Native playback requires webOS');
-            return false;
-        }
-        
-        try {
-            // First unload any existing media
-            if (this.mediaId) {
-                await this.unload();
-            }
-            
-            // Get window ID - in webOS apps this is typically provided
-            this.windowId = options.windowId || '_Window_Id_1';
-            
-            // Load the media
-            const loadParams = {
+            const result = await lunaCall('luna://com.webos.media/load', {
                 uri: url,
                 type: 'media',
                 payload: {
                     option: {
                         appId: this.appId,
-                        windowId: this.windowId,
-                        // Enable subtitle rendering
-                        // Note: actual subtitle params may vary by webOS version
+                        windowId: '_Window_Id_1'
                     }
                 }
-            };
-            
-            this.onLog(`Loading media: ${url}`);
-            const result = await this.lunaCall('luna://com.webos.media/load', loadParams);
+            });
             
             if (result.mediaId) {
                 this.mediaId = result.mediaId;
-                this.onLog(`Media loaded: ${this.mediaId}`);
+                console.log('[WebOS] Media loaded, ID:', this.mediaId);
                 
-                // Subscribe to media events
-                await this.subscribe();
+                // Subscribe to events
+                this._subscribe();
                 
-                this.onStateChange('loaded');
+                this._emit('loaded', { mediaId: this.mediaId });
                 return true;
             }
             
             return false;
             
         } catch (err) {
-            this.onError(`Load failed: ${err.message}`);
+            console.error('[WebOS] Load error:', err);
+            this._emit('error', { message: err.message });
             return false;
         }
     }
     
     /**
-     * Subscribe to media events (currentTime, sourceInfo, etc.)
+     * Subscribe to media events
      */
-    async subscribe() {
+    _subscribe() {
         if (!this.mediaId) return;
         
-        this.subscriptionHandle = this.lunaSubscribe(
+        this.subscription = lunaSubscribe(
             'luna://com.webos.media/subscribe',
             { mediaId: this.mediaId },
-            (event) => this.handleMediaEvent(event)
+            (event) => this._handleEvent(event)
         );
     }
     
     /**
-     * Handle media events from subscription
+     * Handle media events
      */
-    handleMediaEvent(event) {
-        // Current time updates
-        if (event.currentTime !== undefined) {
-            this.currentTime = event.currentTime / 1000; // Convert ms to seconds
-            this.onTimeUpdate(this.currentTime, this.duration);
-            this.emit('currentTime', this.currentTime);
-        }
-        
-        // Source info (includes stream details)
+    _handleEvent(event) {
+        // Source info - contains stream details including subtitles
         if (event.sourceInfo) {
-            this.sourceInfo = event.sourceInfo;
-            this.duration = (event.sourceInfo.duration || 0) / 1000;
+            console.log('[WebOS] Source info:', JSON.stringify(event.sourceInfo));
+            this._emit('sourceInfo', event.sourceInfo);
             
-            this.onLog(`Source info: ${JSON.stringify(event.sourceInfo).substring(0, 200)}...`);
-            this.onSourceInfo(event.sourceInfo);
-            this.emit('sourceInfo', event.sourceInfo);
-            
-            // Log subtitle streams if present
-            if (event.sourceInfo.subtitle_streams) {
-                this.onLog(`Subtitle streams found: ${event.sourceInfo.subtitle_streams.length}`);
-                event.sourceInfo.subtitle_streams.forEach((sub, i) => {
-                    this.onLog(`  Subtitle ${i}: ${JSON.stringify(sub)}`);
+            // Log program info
+            if (event.sourceInfo.programInfo) {
+                event.sourceInfo.programInfo.forEach((prog, i) => {
+                    console.log(`[WebOS] Program ${i}:`, JSON.stringify(prog));
+                    
+                    if (prog.subtitleStreamInfo) {
+                        console.log('[WebOS] Subtitles found:', prog.subtitleStreamInfo);
+                        this._emit('subtitles', prog.subtitleStreamInfo);
+                    }
                 });
             }
         }
         
-        // Video info
-        if (event.videoInfo) {
-            this.onLog(`Video info: ${JSON.stringify(event.videoInfo)}`);
+        // Playback state
+        if (event.playing !== undefined) {
+            this.isPlaying = event.playing;
+            this._emit(event.playing ? 'playing' : 'paused');
         }
         
-        // Audio info
-        if (event.audioInfo) {
-            this.onLog(`Audio info: ${JSON.stringify(event.audioInfo)}`);
-        }
-        
-        // Playback state changes
-        if (event.loadCompleted) {
-            this.onStateChange('loadCompleted');
-        }
-        if (event.playing) {
-            this.isPlaying = true;
-            this.onStateChange('playing');
-            this.emit('playing');
-        }
-        if (event.paused) {
-            this.isPlaying = false;
-            this.onStateChange('paused');
-            this.emit('paused');
-        }
         if (event.endOfStream) {
             this.isPlaying = false;
-            this.onStateChange('ended');
-            this.emit('ended');
+            this._emit('ended');
         }
+        
         if (event.error) {
-            this.onError(`Playback error: ${event.error.errorText}`);
-            this.onStateChange('error');
-            this.emit('error', event.error);
+            console.error('[WebOS] Playback error:', event.error);
+            this._emit('error', event.error);
         }
         
-        // Buffer events
-        if (event.bufferingStart) {
-            this.onStateChange('buffering');
-        }
-        if (event.bufferingEnd) {
-            this.onStateChange('ready');
+        // Current time
+        if (event.currentTime !== undefined) {
+            this._emit('timeupdate', event.currentTime / 1000);
         }
         
-        // Buffer range
-        if (event.bufferRange) {
-            this.emit('bufferRange', event.bufferRange);
-        }
+        // Buffer state
+        if (event.bufferingStart) this._emit('buffering', true);
+        if (event.bufferingEnd) this._emit('buffering', false);
     }
     
     /**
-     * Play the loaded media
+     * Start playback
      */
     async play() {
-        if (!this.mediaId) {
-            this.onError('No media loaded');
-            return false;
-        }
+        if (!this.mediaId) return false;
         
         try {
-            await this.lunaCall('luna://com.webos.media/play', {
+            await lunaCall('luna://com.webos.media/play', {
                 mediaId: this.mediaId
             });
-            this.isPlaying = true;
             return true;
         } catch (err) {
-            this.onError(`Play failed: ${err.message}`);
+            console.error('[WebOS] Play error:', err);
             return false;
         }
     }
@@ -434,50 +322,30 @@ export class WebOSMediaPlayer {
         if (!this.mediaId) return false;
         
         try {
-            await this.lunaCall('luna://com.webos.media/pause', {
+            await lunaCall('luna://com.webos.media/pause', {
                 mediaId: this.mediaId
             });
-            this.isPlaying = false;
             return true;
         } catch (err) {
-            this.onError(`Pause failed: ${err.message}`);
+            console.error('[WebOS] Pause error:', err);
             return false;
         }
     }
     
     /**
-     * Seek to position (in seconds)
+     * Seek to position (seconds)
      */
-    async seek(positionSeconds) {
+    async seek(position) {
         if (!this.mediaId) return false;
         
         try {
-            await this.lunaCall('luna://com.webos.media/seek', {
+            await lunaCall('luna://com.webos.media/seek', {
                 mediaId: this.mediaId,
-                position: Math.floor(positionSeconds * 1000) // Convert to ms
+                position: Math.floor(position * 1000) // Convert to ms
             });
             return true;
         } catch (err) {
-            this.onError(`Seek failed: ${err.message}`);
-            return false;
-        }
-    }
-    
-    /**
-     * Set playback rate
-     */
-    async setPlayRate(rate, audioOutput = true) {
-        if (!this.mediaId) return false;
-        
-        try {
-            await this.lunaCall('luna://com.webos.media/setPlayRate', {
-                mediaId: this.mediaId,
-                playRate: rate,
-                audioOutput: audioOutput
-            });
-            return true;
-        } catch (err) {
-            this.onError(`SetPlayRate failed: ${err.message}`);
+            console.error('[WebOS] Seek error:', err);
             return false;
         }
     }
@@ -489,13 +357,63 @@ export class WebOSMediaPlayer {
         if (!this.mediaId) return false;
         
         try {
-            await this.lunaCall('luna://com.webos.media/setVolume', {
+            await lunaCall('luna://com.webos.media/setVolume', {
                 mediaId: this.mediaId,
-                volume: Math.max(0, Math.min(100, Math.floor(volume)))
+                volume: Math.max(0, Math.min(100, volume))
             });
             return true;
         } catch (err) {
-            this.onError(`SetVolume failed: ${err.message}`);
+            console.error('[WebOS] Volume error:', err);
+            return false;
+        }
+    }
+    
+    /**
+     * Select subtitle track
+     */
+    async selectSubtitle(index) {
+        if (!this.mediaId) return false;
+        
+        try {
+            await lunaCall('luna://com.webos.media/selectTrack', {
+                mediaId: this.mediaId,
+                type: 'text',
+                index: index
+            });
+            console.log('[WebOS] Selected subtitle track:', index);
+            return true;
+        } catch (err) {
+            console.error('[WebOS] Subtitle select error:', err);
+            return false;
+        }
+    }
+    
+    /**
+     * Unload media
+     */
+    async unload() {
+        if (!this.mediaId) return true;
+        
+        try {
+            // Cancel subscription
+            if (this.subscription) {
+                try { this.subscription.cancel(); } catch (e) {}
+                this.subscription = null;
+            }
+            
+            await lunaCall('luna://com.webos.media/unload', {
+                mediaId: this.mediaId
+            });
+            
+            console.log('[WebOS] Unloaded:', this.mediaId);
+            this.mediaId = null;
+            this.isPlaying = false;
+            this._emit('unloaded');
+            return true;
+            
+        } catch (err) {
+            console.error('[WebOS] Unload error:', err);
+            this.mediaId = null;
             return false;
         }
     }
@@ -506,154 +424,43 @@ export class WebOSMediaPlayer {
     isLoaded() {
         return this.mediaId !== null;
     }
-    
-    /**
-     * Unload media and release resources
-     */
-    async unload() {
-        if (!this.mediaId) return true;
-        
-        try {
-            // Unsubscribe first
-            if (this.subscriptionHandle) {
-                if (typeof this.subscriptionHandle.cancel === 'function') {
-                    this.subscriptionHandle.cancel();
-                }
-                this.subscriptionHandle = null;
-            }
-            
-            await this.lunaCall('luna://com.webos.media/unload', {
-                mediaId: this.mediaId
-            });
-            
-            this.mediaId = null;
-            this.isPlaying = false;
-            this.currentTime = 0;
-            this.sourceInfo = null;
-            this.onStateChange('unloaded');
-            
-            return true;
-        } catch (err) {
-            this.onError(`Unload failed: ${err.message}`);
-            return false;
-        }
-    }
-    
-    /**
-     * Get current pipeline state
-     */
-    async getPipelineState() {
-        if (!this.mediaId) return null;
-        
-        try {
-            const result = await this.lunaCall('luna://com.webos.media/getPipelineState', {
-                mediaId: this.mediaId
-            });
-            
-            if (result.data) {
-                return JSON.parse(result.data);
-            }
-            return result;
-        } catch (err) {
-            this.onError(`GetPipelineState failed: ${err.message}`);
-            return null;
-        }
-    }
-    
-    /**
-     * Get active pipelines (for debugging)
-     */
-    async getActivePipelines() {
-        try {
-            return await this.lunaCall('luna://com.webos.media/getActivePipelines', {});
-        } catch (err) {
-            this.onError(`GetActivePipelines failed: ${err.message}`);
-            return null;
-        }
-    }
-    
-    /**
-     * Check if webOS native playback is available
-     */
-    static isAvailable() {
-        if (typeof window === 'undefined') return false;
-        
-        const ua = navigator.userAgent || '';
-        return ua.includes('Web0S') || 
-               ua.includes('webOS') || 
-               typeof window.webOS !== 'undefined' ||
-               typeof window.PalmSystem !== 'undefined';
-    }
-    
-    /**
-     * Get compatibility info
-     */
-    getCompatibility() {
-        return {
-            isWebOS: this.isWebOS,
-            hasBridge: !!this.bridge,
-            appId: this.appId,
-            mediaId: this.mediaId,
-            recommendation: this.isWebOS 
-                ? 'Native playback available - full DVB subtitle support'
-                : 'Not on webOS - use HTML5 video with mpegts.js'
-        };
-    }
 }
 
+// ============================================================
+// Simple Test Function
+// ============================================================
+
 /**
- * Quick check for webOS availability
+ * Quick test to verify Luna service is working
  */
-export function isWebOS() {
+export async function testLunaService() {
+    console.log('=== WebOS Luna Service Test ===');
+    console.log('isWebOS():', isWebOS());
+    console.log('getWebOSVersion():', getWebOSVersion());
+    console.log('WebOSServiceBridge:', typeof window.WebOSServiceBridge);
+    console.log('window.webOS:', typeof window.webOS);
+    console.log('PalmSystem:', typeof window.PalmSystem);
+    
+    if (!isWebOS()) {
+        console.log('Not running on WebOS');
+        return false;
+    }
+    
     try {
-        return WebOSMediaPlayer.isAvailable();
-    } catch (e) {
-        console.error('[isWebOS] Detection error:', e);
+        // Try a simple Luna call
+        const result = await lunaCall('luna://com.webos.service.tv.systemproperty/getSystemInfo', {
+            keys: ['modelName', 'firmwareVersion', 'sdkVersion']
+        });
+        console.log('System info:', result);
+        return true;
+    } catch (err) {
+        console.error('Luna test failed:', err);
         return false;
     }
 }
 
-/**
- * Get webOS version info as a string for display
- */
-export function getWebOSVersion() {
-    if (typeof window === 'undefined') return 'N/A';
-    
-    const ua = navigator.userAgent || '';
-    
-    // Try to extract version from UA
-    // Example: "Chrome/108.0.5359.211" indicates webOS TV 24
-    const chromeMatch = ua.match(/Chrome\/(\d+)/);
-    if (chromeMatch) {
-        const chromeVersion = parseInt(chromeMatch[1]);
-        
-        // Map Chrome versions to webOS versions (sorted descending)
-        const versionMap = [
-            [120, 'TV25'],
-            [108, 'TV24'],
-            [94, 'TV23'],
-            [87, 'TV22'],
-            [79, 'TV6'],
-            [68, 'TV5'],
-            [53, 'TV4'],
-            [38, 'TV3']
-        ];
-        
-        // Find closest match
-        for (const [ver, name] of versionMap) {
-            if (chromeVersion >= ver) {
-                return name;
-            }
-        }
-        
-        return `Chrome${chromeVersion}`;
-    }
-    
-    // Check for webOS version in UA directly
-    const webosMatch = ua.match(/webOS\.TV-(\d+\.\d+)/);
-    if (webosMatch) {
-        return `v${webosMatch[1]}`;
-    }
-    
-    return 'Yes';
+// Make test available globally for console debugging
+if (typeof window !== 'undefined') {
+    window.testLunaService = testLunaService;
+    window.isWebOS = isWebOS;
 }
