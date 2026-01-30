@@ -1091,6 +1091,21 @@
                             <span class="value-display" id="ocrQueueStatus">0</span>
                         </div>
                     </div>
+                    
+                    <!-- Row 7: FFmpeg.wasm (Advanced) -->
+                    <div class="controls-row">
+                        <div class="control-group">
+                            <label>FFmpeg.wasm:</label>
+                            <button class="control-btn" id="ctrlFFmpeg" title="Load FFmpeg.wasm for advanced stream analysis (~31MB)">Load</button>
+                        </div>
+                        <div class="control-group">
+                            <label>FFmpeg Status:</label>
+                            <span class="value-display" id="ffmpegStatus">Not loaded</span>
+                        </div>
+                        <button class="control-btn" id="ctrlAnalyzeStream" title="Analyze stream with FFmpeg (detects all tracks)" disabled>🔍 Analyze Stream</button>
+                        <button class="control-btn" id="ctrlExtractSubsFFmpeg" title="Extract subtitle images with FFmpeg" disabled>📺 Extract Subs (FFmpeg)</button>
+                        <button class="control-btn" id="ctrlUnloadFFmpeg" title="Unload FFmpeg to free memory" disabled>⬇ Unload</button>
+                    </div>
                 </div>
                 
                 <!-- Live Subtitle Display -->

@@ -2,6 +2,7 @@
 
 import { discoverHDHR, discoverByIP, scanSubnet, detectLocalSubnet } from './discovery.js';
 import { DVBSubDecoder, TSSubtitleExtractor } from './dvbsub.js';
+import { FFmpegHelper, checkFFmpegCompatibility } from './ffmpeg-helper.js';
 
 // ========================
 // DOM Elements
@@ -87,6 +88,13 @@ const ocrQueueStatus = document.getElementById('ocrQueueStatus');
 const subtitleCanvas = document.getElementById('subtitleCanvas');
 const subtitleOverlay = document.getElementById('subtitleOverlay');
 
+// FFmpeg.wasm elements
+const ctrlFFmpeg = document.getElementById('ctrlFFmpeg');
+const ffmpegStatus = document.getElementById('ffmpegStatus');
+const ctrlAnalyzeStream = document.getElementById('ctrlAnalyzeStream');
+const ctrlExtractSubsFFmpeg = document.getElementById('ctrlExtractSubsFFmpeg');
+const ctrlUnloadFFmpeg = document.getElementById('ctrlUnloadFFmpeg');
+
 // ========================
 // State
 // ========================
@@ -106,6 +114,11 @@ let currentSubtitleText = '';
 let addedVTTTrack = null;
 let detectedSubtitlePIDs = [];
 let recentBitmaps = [];
+
+// FFmpeg.wasm state
+let ffmpegHelper = null;
+let ffmpegEnabled = false;
+let ffmpegLoaded = false;
 
 // ========================
 // Video Event Logging
@@ -1004,6 +1017,7 @@ refreshAllTabs();
 updateStatus();
 initVideoControls();
 initSubtitleExtraction();
+initFFmpegHelper();
 
 // Periodic updates
 setInterval(() => {
@@ -1729,6 +1743,256 @@ function updateDVBStatus() {
     
     const stats = dvbSubDecoder.getStats();
     ocrQueueStatus.textContent = stats.ocrQueueLength.toString();
+}
+
+// ========================
+// FFmpeg.wasm Integration
+// ========================
+
+function initFFmpegHelper() {
+    // Check compatibility on startup
+    const compat = checkFFmpegCompatibility();
+    if (!compat.compatible) {
+        ffmpegStatus.textContent = 'Not compatible';
+        ctrlFFmpeg.disabled = true;
+        logEvent('ffmpeg', `Compatibility issues: ${compat.issues.join(', ')}`, 'error');
+        return;
+    }
+    
+    ffmpegStatus.textContent = compat.hasSharedArrayBuffer ? 'Ready (MT)' : 'Ready (ST)';
+    logEvent('ffmpeg', `FFmpeg.wasm ${compat.recommendations}`, 'info');
+    
+    // Load button
+    ctrlFFmpeg.addEventListener('click', async () => {
+        if (ffmpegLoaded) return;
+        
+        ctrlFFmpeg.disabled = true;
+        ctrlFFmpeg.textContent = 'Loading...';
+        ffmpegStatus.textContent = 'Loading (~31MB)...';
+        
+        ffmpegHelper = new FFmpegHelper({
+            onLog: (msg) => logEvent('ffmpeg', msg, 'info'),
+            onError: (msg) => logEvent('ffmpeg', msg, 'error'),
+            onProgress: (percent, time) => {
+                ffmpegStatus.textContent = `Processing: ${percent.toFixed(0)}%`;
+            },
+            onSubtitleImage: handleFFmpegSubtitleImage,
+            onStreamInfo: handleFFmpegStreamInfo
+        });
+        
+        const loaded = await ffmpegHelper.load();
+        
+        if (loaded) {
+            ffmpegLoaded = true;
+            ctrlFFmpeg.textContent = 'Loaded ✓';
+            ffmpegStatus.textContent = 'Ready';
+            ctrlAnalyzeStream.disabled = false;
+            ctrlExtractSubsFFmpeg.disabled = false;
+            ctrlUnloadFFmpeg.disabled = false;
+            logEvent('ffmpeg', 'FFmpeg.wasm loaded successfully', 'success');
+        } else {
+            ctrlFFmpeg.disabled = false;
+            ctrlFFmpeg.textContent = 'Load';
+            ffmpegStatus.textContent = 'Failed';
+        }
+    });
+    
+    // Analyze stream button
+    ctrlAnalyzeStream.addEventListener('click', async () => {
+        const url = streamUrlInput.value.trim();
+        if (!url) {
+            alert('Enter a stream URL first');
+            return;
+        }
+        
+        if (!ffmpegLoaded || !ffmpegHelper) {
+            alert('Load FFmpeg.wasm first');
+            return;
+        }
+        
+        ctrlAnalyzeStream.disabled = true;
+        ctrlAnalyzeStream.textContent = '🔍 Analyzing...';
+        ffmpegStatus.textContent = 'Fetching stream...';
+        
+        try {
+            const info = await ffmpegHelper.analyzeStream(url, {
+                chunkSize: 3 * 1024 * 1024 // 3MB for analysis
+            });
+            
+            displayStreamAnalysis(info);
+            ffmpegStatus.textContent = 'Ready';
+            
+        } catch (err) {
+            logEvent('ffmpeg', `Analysis failed: ${err.message}`, 'error');
+            ffmpegStatus.textContent = 'Analysis failed';
+        }
+        
+        ctrlAnalyzeStream.disabled = false;
+        ctrlAnalyzeStream.textContent = '🔍 Analyze Stream';
+    });
+    
+    // Extract subtitles button
+    ctrlExtractSubsFFmpeg.addEventListener('click', async () => {
+        const url = streamUrlInput.value.trim();
+        if (!url) {
+            alert('Enter a stream URL first');
+            return;
+        }
+        
+        if (!ffmpegLoaded || !ffmpegHelper) {
+            alert('Load FFmpeg.wasm first');
+            return;
+        }
+        
+        ctrlExtractSubsFFmpeg.disabled = true;
+        ctrlExtractSubsFFmpeg.textContent = '📺 Extracting...';
+        ffmpegStatus.textContent = 'Fetching stream...';
+        
+        try {
+            const images = await ffmpegHelper.extractSubtitleImages(url, {
+                chunkSize: 10 * 1024 * 1024 // 10MB for subtitle extraction
+            });
+            
+            if (images.length === 0) {
+                logEvent('ffmpeg', 'No subtitle images found in stream chunk', 'info');
+                ffmpegStatus.textContent = 'No subtitles found';
+            } else {
+                logEvent('ffmpeg', `Extracted ${images.length} subtitle images`, 'success');
+                ffmpegStatus.textContent = `${images.length} images extracted`;
+                
+                // Process images with OCR if DVB-SUB is enabled
+                if (dvbSubEnabled && dvbSubDecoder && dvbSubDecoder.tesseractReady) {
+                    logEvent('ffmpeg', 'Processing images with OCR...', 'info');
+                    for (const img of images) {
+                        await processFFmpegSubtitleImage(img);
+                    }
+                }
+            }
+            
+        } catch (err) {
+            logEvent('ffmpeg', `Extraction failed: ${err.message}`, 'error');
+            ffmpegStatus.textContent = 'Extraction failed';
+        }
+        
+        ctrlExtractSubsFFmpeg.disabled = false;
+        ctrlExtractSubsFFmpeg.textContent = '📺 Extract Subs (FFmpeg)';
+    });
+    
+    // Unload button
+    ctrlUnloadFFmpeg.addEventListener('click', async () => {
+        if (ffmpegHelper) {
+            await ffmpegHelper.unload();
+            ffmpegHelper = null;
+        }
+        
+        ffmpegLoaded = false;
+        ctrlFFmpeg.disabled = false;
+        ctrlFFmpeg.textContent = 'Load';
+        ctrlAnalyzeStream.disabled = true;
+        ctrlExtractSubsFFmpeg.disabled = true;
+        ctrlUnloadFFmpeg.disabled = true;
+        ffmpegStatus.textContent = 'Unloaded';
+        
+        logEvent('ffmpeg', 'FFmpeg.wasm unloaded to free memory', 'info');
+    });
+}
+
+function handleFFmpegSubtitleImage(image) {
+    logEvent('ffmpeg-sub', `Subtitle image: ${image.filename} (${(image.data.length/1024).toFixed(1)}KB)`, 'info');
+    
+    // Store in recent bitmaps for display
+    const img = new Image();
+    img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        
+        recentBitmaps.push({
+            canvas: canvas,
+            width: img.width,
+            height: img.height,
+            time: video.currentTime,
+            source: 'ffmpeg'
+        });
+        
+        if (recentBitmaps.length > 10) {
+            recentBitmaps.shift();
+        }
+        
+        dvbBitmapCount.textContent = recentBitmaps.length.toString();
+    };
+    img.src = URL.createObjectURL(image.blob);
+}
+
+async function processFFmpegSubtitleImage(image) {
+    if (!dvbSubDecoder || !dvbSubDecoder.tesseractReady) return;
+    
+    try {
+        const result = await dvbSubDecoder.tesseractWorker.recognize(image.blob);
+        const text = result.data.text.trim();
+        
+        if (text.length > 2) {
+            const confidence = result.data.confidence;
+            addSubtitleCue(text, video.currentTime, video.currentTime + 5);
+            
+            const cue = extractedCues[extractedCues.length - 1];
+            if (cue) {
+                cue.confidence = confidence;
+                cue.source = 'ffmpeg-ocr';
+            }
+            
+            logEvent('ffmpeg-ocr', `"${text.substring(0, 40)}..." (${confidence.toFixed(0)}% confidence)`, 
+                confidence >= 50 ? 'success' : 'info');
+        }
+    } catch (err) {
+        logEvent('ffmpeg-ocr', `OCR failed: ${err.message}`, 'error');
+    }
+}
+
+function handleFFmpegStreamInfo(info) {
+    logEvent('ffmpeg', `Detected ${info.streams.length} streams: ${info.videoStreams.length} video, ${info.audioStreams.length} audio, ${info.subtitleStreams.length} subtitle`, 'success');
+    
+    // Update detected subtitle PIDs
+    if (info.subtitleStreams.length > 0) {
+        detectedSubtitlePIDs = info.subtitleStreams.map(s => ({
+            pid: s.pid,
+            type: 0x06,
+            typeName: s.codec
+        }));
+        dvbPidStatus.textContent = detectedSubtitlePIDs.map(s => s.pid || 'N/A').join(', ');
+    }
+}
+
+function displayStreamAnalysis(info) {
+    let msg = `Stream Analysis:\n`;
+    msg += `Format: ${info.format || 'unknown'}\n`;
+    msg += `Duration: ${info.duration || 'live'}\n`;
+    if (info.bitrate) msg += `Bitrate: ${info.bitrate} kb/s\n`;
+    msg += `\nStreams (${info.streams.length}):\n`;
+    
+    info.streams.forEach(s => {
+        msg += `  #${s.index} [${s.type}] ${s.codec}`;
+        if (s.pid) msg += ` (PID: ${s.pid})`;
+        if (s.language) msg += ` (${s.language})`;
+        msg += '\n';
+    });
+    
+    // Show in alert for now (could add a modal)
+    logEvent('ffmpeg-analysis', msg.trim(), 'success');
+    
+    // Also log individual streams
+    if (info.subtitleStreams.length > 0) {
+        logEvent('ffmpeg', `Found ${info.subtitleStreams.length} subtitle stream(s)!`, 'success');
+        info.subtitleStreams.forEach(s => {
+            logEvent('ffmpeg', `  Subtitle: ${s.codec} ${s.language ? `(${s.language})` : ''} ${s.pid ? `PID:${s.pid}` : ''}`, 'info');
+        });
+    } else {
+        logEvent('ffmpeg', 'No subtitle streams detected in this chunk', 'info');
+    }
+    
+    refreshSubtitlesTab();
 }
 
 function addSubtitleCue(text, startTime, endTime) {
