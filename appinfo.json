@@ -1,0 +1,17 @@
+{
+    "id": "com.hdhr.streamdebug",
+    "version": "1.0.0",
+    "vendor": "HDHomeRun Tools",
+    "type": "web",
+    "main": "index.html",
+    "title": "Stream Debugger",
+    "icon": "icon.png",
+    "largeIcon": "largeIcon.png",
+    "bgColor": "#0f172a",
+    "resolution": "1920x1080",
+    "disableBackHistoryAPI": false,
+    "handlesRelaunch": false,
+    "requiredPermissions": [
+        "all"
+    ]
+}

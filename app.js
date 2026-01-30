@@ -485,6 +485,189 @@ function useDevice(device) {
 }
 
 // ========================
+// WebOS / TV Remote Support
+// ========================
+
+const isWebOS = typeof window.webOS !== 'undefined' || 
+                typeof window.webOSSystem !== 'undefined' ||
+                navigator.userAgent.includes('Web0S') ||
+                navigator.userAgent.includes('webOS');
+
+if (isWebOS) {
+    logEvent('platform', 'WebOS detected');
+}
+
+// Focusable elements for TV navigation
+let focusableElements = [];
+let currentFocusIndex = 0;
+
+function updateFocusableElements() {
+    focusableElements = Array.from(document.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), .tree-expandable, .discovery-device'
+    )).filter(el => {
+        // Only include visible elements
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    });
+}
+
+function setFocus(index) {
+    // Remove previous focus
+    focusableElements.forEach(el => el.classList.remove('tv-focused'));
+    
+    // Set new focus
+    currentFocusIndex = Math.max(0, Math.min(index, focusableElements.length - 1));
+    if (focusableElements[currentFocusIndex]) {
+        focusableElements[currentFocusIndex].classList.add('tv-focused');
+        focusableElements[currentFocusIndex].scrollIntoView({ block: 'nearest' });
+        
+        // Focus input elements for text entry
+        if (focusableElements[currentFocusIndex].tagName === 'INPUT') {
+            focusableElements[currentFocusIndex].focus();
+        }
+    }
+}
+
+document.addEventListener('keydown', (e) => {
+    // Map webOS back button
+    if (e.keyCode === 461) {
+        e.key = 'Escape';
+    }
+    
+    // Handle discovery overlay separately
+    if (discoveryOverlay.style.display === 'flex') {
+        handleDiscoveryKeys(e);
+        return;
+    }
+    
+    updateFocusableElements();
+    
+    switch (e.key) {
+        case 'ArrowUp':
+            e.preventDefault();
+            setFocus(currentFocusIndex - 1);
+            break;
+        case 'ArrowDown':
+            e.preventDefault();
+            setFocus(currentFocusIndex + 1);
+            break;
+        case 'ArrowLeft':
+            e.preventDefault();
+            // Find element to the left
+            if (focusableElements[currentFocusIndex]) {
+                const current = focusableElements[currentFocusIndex].getBoundingClientRect();
+                let bestIndex = currentFocusIndex;
+                let bestDist = Infinity;
+                focusableElements.forEach((el, i) => {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.right < current.left) {
+                        const dist = current.left - rect.right;
+                        if (dist < bestDist) {
+                            bestDist = dist;
+                            bestIndex = i;
+                        }
+                    }
+                });
+                setFocus(bestIndex);
+            }
+            break;
+        case 'ArrowRight':
+            e.preventDefault();
+            // Find element to the right
+            if (focusableElements[currentFocusIndex]) {
+                const current = focusableElements[currentFocusIndex].getBoundingClientRect();
+                let bestIndex = currentFocusIndex;
+                let bestDist = Infinity;
+                focusableElements.forEach((el, i) => {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.left > current.right) {
+                        const dist = rect.left - current.right;
+                        if (dist < bestDist) {
+                            bestDist = dist;
+                            bestIndex = i;
+                        }
+                    }
+                });
+                setFocus(bestIndex);
+            }
+            break;
+        case 'Enter':
+            e.preventDefault();
+            if (focusableElements[currentFocusIndex]) {
+                focusableElements[currentFocusIndex].click();
+            }
+            break;
+        case 'Escape':
+        case 'Backspace':
+            // Go back or stop video
+            if (document.activeElement.tagName !== 'INPUT') {
+                e.preventDefault();
+                if (!video.paused) {
+                    video.pause();
+                    logEvent('remote', 'Back pressed - paused');
+                }
+            }
+            break;
+        case 'MediaPlayPause':
+        case ' ':
+            e.preventDefault();
+            if (video.paused) {
+                video.play();
+            } else {
+                video.pause();
+            }
+            break;
+        case 'MediaPlay':
+            e.preventDefault();
+            video.play();
+            break;
+        case 'MediaPause':
+        case 'MediaStop':
+            e.preventDefault();
+            video.pause();
+            break;
+    }
+});
+
+function handleDiscoveryKeys(e) {
+    const devices = Array.from(document.querySelectorAll('.discovery-device'));
+    const currentDevice = devices.findIndex(d => d.classList.contains('focused'));
+    
+    switch (e.key) {
+        case 'ArrowUp':
+            e.preventDefault();
+            if (currentDevice > 0) {
+                devices.forEach(d => d.classList.remove('focused'));
+                devices[currentDevice - 1].classList.add('focused');
+            }
+            break;
+        case 'ArrowDown':
+            e.preventDefault();
+            if (currentDevice < devices.length - 1) {
+                devices.forEach(d => d.classList.remove('focused'));
+                devices[currentDevice + 1].classList.add('focused');
+            } else if (currentDevice === -1 && devices.length > 0) {
+                devices[0].classList.add('focused');
+            }
+            break;
+        case 'Enter':
+            e.preventDefault();
+            if (currentDevice >= 0) {
+                devices[currentDevice].click();
+            } else {
+                // Try manual connect
+                connectManualBtn.click();
+            }
+            break;
+        case 'Escape':
+        case 'Backspace':
+            e.preventDefault();
+            discoveryOverlay.style.display = 'none';
+            break;
+    }
+}
+
+// ========================
 // Initialize
 // ========================
 
@@ -494,6 +677,12 @@ updateStatus();
 
 // Periodic status update
 setInterval(updateStatus, 1000);
+
+// Initial focus setup
+setTimeout(() => {
+    updateFocusableElements();
+    setFocus(0);
+}, 100);
 
 console.log('Stream Debugger initialized');
 logEvent('init', 'Stream debugger ready');
